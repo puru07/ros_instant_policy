@@ -18,7 +18,7 @@ if __name__ == '__main__':
     ####################################################################################################################
     model_path = './checkpoints'
     config = pickle.load(open(f'{model_path}/config.pkl', 'rb'))
-
+    config['device']='cpu'
     config['compile_models'] = False
     config['batch_size'] = 1
     config['num_demos'] = num_demos

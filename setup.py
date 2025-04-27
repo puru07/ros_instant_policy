@@ -1,30 +1,30 @@
-import pathlib
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
+import os
+from glob import glob
 
-HERE = pathlib.Path(__file__).parent
+package_name = 'ip'
 
-VERSION = '0.0.0'
-PACKAGE_NAME = 'ip'
-AUTHOR = 'You'
-AUTHOR_EMAIL = 'you@email.com'
-URL = 'https://github.com/you/your_package'
-
-LICENSE = 'MIT'
-DESCRIPTION = ''
-# LONG_DESCRIPTION = (HERE / "README.md").read_text()
-# LONG_DESC_TYPE = "text/markdown"
-
-INSTALL_REQUIRES = []
-
-setup(name=PACKAGE_NAME,
-      version=VERSION,
-      description=DESCRIPTION,
-      # long_description=LONG_DESCRIPTION,
-      # long_description_content_type=LONG_DESC_TYPE,
-      author=AUTHOR,
-      license=LICENSE,
-      author_email=AUTHOR_EMAIL,
-      url=URL,
-      install_requires=INSTALL_REQUIRES,
-      packages=find_packages()
-      )
+setup(
+    name=package_name,
+    version='0.0.0',
+    packages=find_packages(exclude=['test']),
+    data_files=[
+        (os.path.join('share', package_name), ['package.xml']),
+        (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
+        # (os.path.join('share', package_name, 'urdf'), glob('urdf/*')),
+        # (os.path.join('share', package_name, 'config', 'ur5e'), glob('config/ur5e/*.yaml')),
+    ],
+    install_requires=['setuptools'],
+    zip_safe=True,
+    maintainer='Your Name',
+    maintainer_email='you@example.com',
+    description='ROS version of IP policy package',
+    license='Apache License 2.0',
+    tests_require=['pytest'],
+    entry_points={
+        'console_scripts': [
+            'eval_pose_control = ip.eval_pose_control:main',
+            'eval_cartesian_motion = ip.eval_cartesian_motion:main',
+        ],
+    },
+)
