@@ -134,12 +134,12 @@ class RolloutPoseNode(Node):
                     grips = grips.squeeze().cpu().numpy()
 
                 # 🧭 Plan a full cartesian path over the predicted poses
-                request = self.createCartesiaRequest()
+                
 
                 for j in range(execution_horizon):
                     pose_mat = T_w_e @ actions[j]
                     pose = self.create_pose(pose_mat)
-                    print(pose.position)
+                    request = self.createCartesiaRequest()
                     request.waypoints.append(pose)
 
                     env_action[:7] = transform_to_pose(T_w_e @ actions[j])
@@ -162,26 +162,13 @@ class RolloutPoseNode(Node):
 
                     goal_msg = ExecuteTrajectory.Goal()
                     goal_msg.trajectory = plan_future.result().solution
-                    print('seding the goal to planner')
+                    # print('seding the goal to planner')
                     send_goal_future = self.execute_client.send_goal_async(goal_msg)
-                    print('waiting for it to get finished')
+                    # print('waiting for it to get finished')
                     rclpy.spin_until_future_complete(self, send_goal_future)
                     # result_future = send_goal_future.result().get_result_async()
                     # rclpy.spin_until_future_complete(self, result_future)
 
-                # plan_future = self.cartesian_client.call_async(request)
-                # rclpy.spin_until_future_complete(self, plan_future)
-
-                # if not plan_future.result():
-                #     self.get_logger().warn("Cartesian planning failed.")
-                #     continue
-
-                # goal_msg = ExecuteTrajectory.Goal()
-                # goal_msg.trajectory = plan_future.result().solution
-                # send_goal_future = self.execute_client.send_goal_async(goal_msg)
-                # rclpy.spin_until_future_complete(self, send_goal_future)
-                # result_future = send_goal_future.result().get_result_async()
-                # rclpy.spin_until_future_complete(self, result_future)
 
                 successes.append(success)
         env.shutdown()
@@ -190,7 +177,7 @@ class RolloutPoseNode(Node):
             request = GetCartesianPath.Request()
             request.group_name = 'ur_manipulator'
             request.link_name = 'tool0'
-            request.max_step = 1.0 # 0.01  # 1cm resolution
+            request.max_step = 0.01 # 0.01  # 1cm resolution
             request.jump_threshold = 0.0
             request.avoid_collisions = True
             request.start_state.is_diff = True
@@ -200,9 +187,11 @@ class RolloutPoseNode(Node):
     def create_pose(self, pose_mat):
         'returns the pose'
         pose = Pose()
-        pose.position.x = pose_mat[0, 3]
-        pose.position.y = pose_mat[2, 3]- 1.0  # to bring it within the workspace of UR5
-        pose.position.z = pose_mat[1, 3]
+        pose.position.x = -1*(pose_mat[0, 3] )
+        pose.position.y = -1*(pose_mat[1, 3])
+        pose.position.z = (pose_mat[2, 3]- 0.8)  # to bring it within the workspace of UR5
+        print(f" pose: {round(pose_mat[0, 3],3)} , {round(pose_mat[1, 3],3)} , {round(pose_mat[2, 3],3)} :::  transformed pose: {round(pose.position.x,3)} , {round(pose.position.y,3)} , {round(pose.position.y,3)}")
+        #print(f"transformed pose: {round(pose.position.x,3)} , {round(pose.position.y,3)} , {round(pose.position.y,3)}")
         quat = R.from_matrix(pose_mat[:3, :3]).as_quat()
         pose.orientation.x = quat[0]
         pose.orientation.y = quat[1]
@@ -231,7 +220,7 @@ def get_point_cloud(obs, camera_names=('front', 'left_shoulder', 'right_shoulder
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--task_name', type=str, default='plate_out')
+    parser.add_argument('--task_name', type=str, default='open_box')
     parser.add_argument('--num_demos', type=int, default=1) # originally it was 2
     parser.add_argument('--num_rollouts', type=int, default=1)
     parser.add_argument('--restrict_rot', type=int, default=1)
@@ -241,7 +230,7 @@ def main():
     model_path = './checkpoints'
     config = pickle.load(open(f'{model_path}/config.pkl', 'rb'))
     print('loaded the config file, here it is')
-    print(config)
+    printConfig(config)
     config['device']='cpu'
     config['compile_models'] = False
     config['batch_size'] = 1
@@ -262,6 +251,9 @@ def main():
     node.destroy_node()
     rclpy.shutdown()
 
+def printConfig(config):
+    for key, value in config.items():
+        print(f"{key} : , {value}")
 if __name__ == '__main__':
 
     main()
