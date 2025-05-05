@@ -187,10 +187,10 @@ class RolloutPoseNode(Node):
     def create_pose(self, pose_mat):
         'returns the pose'
         pose = Pose()
-        pose.position.x = -1*(pose_mat[0, 3] )
-        pose.position.y = -1*(pose_mat[1, 3])
+        pose.position.y = (pose_mat[0, 3] ) + 0.2
+        pose.position.x = -1*(pose_mat[1, 3])
         pose.position.z = (pose_mat[2, 3]- 0.8)  # to bring it within the workspace of UR5
-        print(f" pose: {round(pose_mat[0, 3],3)} , {round(pose_mat[1, 3],3)} , {round(pose_mat[2, 3],3)} :::  transformed pose: {round(pose.position.x,3)} , {round(pose.position.y,3)} , {round(pose.position.y,3)}")
+        print(f" pose: {round(pose_mat[0, 3],3)} , {round(pose_mat[1, 3],3)} , {round(pose_mat[2, 3],3)} :::  transformed pose: {round(pose.position.x,3)} , {round(pose.position.y,3)} , {round(pose.position.z,3)}")
         #print(f"transformed pose: {round(pose.position.x,3)} , {round(pose.position.y,3)} , {round(pose.position.y,3)}")
         quat = R.from_matrix(pose_mat[:3, :3]).as_quat()
         pose.orientation.x = quat[0]
