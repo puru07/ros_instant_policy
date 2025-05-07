@@ -5,6 +5,7 @@ __pycache__/
 
 #checkpoint folder
 **/checkpoints/
+**/assets/
 
 # C extensions
 *.so

@@ -27,6 +27,7 @@ setup(
             'eval_cartesian_motion = ip.eval_cartesian_motion:main',
             'capture_and_segment = ip.segmentation.capture_and_segment:main',
             'joint_state_logger = ip.data_collection.joint_state_logger:main',
+            'camera_node = ip.segmentation.camera_node:main',
         ],
     },
 )
