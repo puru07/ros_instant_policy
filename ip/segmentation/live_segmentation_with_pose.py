@@ -159,16 +159,22 @@ class LiveSegmentationWithPoseNode(Node):
             self.get_logger().info(f"Created save directories in: {self.save_dir}")
 
     def get_tool0_pose(self):
-        """Get the current pose of tool0 relative to base_link."""
+        """Get the current pose of tool0 relative to base_link using image timestamp."""
         try:
-            now = rclpy.time.Time()
+            if self.latest_data['rgb_image'] is None:
+                return None
+
+            stamp = self.latest_data['rgb_image'].header.stamp
             trans = self.tf_buffer.lookup_transform(
-                self.base_frame, self.tool_frame, now,
-                timeout=rclpy.duration.Duration(seconds=0.1))
-            
+                self.base_frame,
+                self.tool_frame,
+                stamp,
+                timeout=rclpy.duration.Duration(seconds=0.5)
+            )
+
             translation = trans.transform.translation
             rotation = trans.transform.rotation
-            
+
             return {
                 'translation': (translation.x, translation.y, translation.z),
                 'rotation': (rotation.x, rotation.y, rotation.z, rotation.w)
@@ -176,6 +182,7 @@ class LiveSegmentationWithPoseNode(Node):
         except Exception as e:
             self.get_logger().warn(f'Could not get tool0 pose: {str(e)}')
             return None
+
 
     def save_pose(self, timestamp, pose):
         """Save the tool0 pose to file."""
