@@ -9,7 +9,7 @@ It allows users to:
 2. Use the center of the previous mask as the prompt point for the next frame
 3. Generate segmentation masks for each frame
 4. Create visualization images showing the tracked object and segmentation
-5. Crop point cloud data using the generated masks
+5. Convert depth images to PCD files
 
 The script processes a sequence of images and produces:
 - Binary masks in the 'masks/' subdirectory
@@ -17,7 +17,7 @@ The script processes a sequence of images and produces:
   * The original image
   * The segmented area (semi-transparent red overlay)
   * The tracked point (green circle)
-- Cropped point clouds in the 'cropped_pcds/' subdirectory
+- PCD files in the 'pcds/' subdirectory
 
 Usage:
     python3 mask_generator.py --image_folder <path_to_images> --checkpoint <path_to_mobile_sam_checkpoint>
@@ -67,14 +67,9 @@ class PointSelector:
         return self.point
 
 def load_images_sorted(folder_path):
-    image_paths = sorted(
-        glob.glob(os.path.join(folder_path, '*.png')) + glob.glob(os.path.join(folder_path, '*.jpg'))
-    )
-    return image_paths
-
-def load_pcd_sorted(folder_path):
-    pcd_paths = sorted(glob.glob(os.path.join(folder_path, '*.pcd')))
-    return pcd_paths
+    rgb_paths = sorted(glob.glob(os.path.join(folder_path, '*rgb*.png')))
+    depth_paths = sorted(glob.glob(os.path.join(folder_path, '*depth*.png')))
+    return rgb_paths, depth_paths
 
 def setup_model(model_type="vit_t", checkpoint_path="./checkpoints/sam/mobile_sam.pt"):
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -115,18 +110,33 @@ def create_visualization(image, mask, point):
     
     return vis_img
 
-def read_pcd_file(pcd_path):
-    """Read points from a PCD file."""
-    points = []
-    with open(pcd_path, 'r') as f:
-        # Skip header
-        for _ in range(11):
-            next(f)
-        # Read points
-        for line in f:
-            x, y, z = map(float, line.strip().split()[:3])
-            points.append([x, y, z])
-    return np.array(points)
+def depth_to_pointcloud(depth_img, mask=None, fx=525.0, fy=525.0, cx=319.5, cy=239.5):
+    """Convert depth image to point cloud using camera intrinsics.
+    If mask is provided, only return points within the masked region."""
+    # Ensure depth image is 2D
+    if len(depth_img.shape) > 2:
+        depth_img = depth_img[:, :, 0]  # Take first channel if 3D
+    
+    rows, cols = depth_img.shape
+    c, r = np.meshgrid(np.arange(cols), np.arange(rows))
+    
+    # Apply mask if provided
+    if mask is not None:
+        valid = (depth_img > 0) & mask
+    else:
+        valid = depth_img > 0
+    
+    # Reshape arrays to match
+    z = depth_img[valid].flatten()
+    x = ((c[valid] - cx) * z / fx).flatten()
+    y = ((r[valid] - cy) * z / fy).flatten()
+    
+    # Stack coordinates and remove any points with invalid values
+    points = np.stack([x, y, z], axis=1)
+    valid_points = ~np.any(np.isnan(points) | np.isinf(points), axis=1)
+    points = points[valid_points]
+    
+    return points
 
 def write_pcd_file(points, filename):
     """Write points to a PCD file."""
@@ -148,54 +158,34 @@ def write_pcd_file(points, filename):
         for point in points:
             f.write(f"{point[0]} {point[1]} {point[2]}\n")
 
-def crop_point_cloud(points, mask, image_shape):
-    """Crop point cloud using the mask."""
-    # Reshape points to match image dimensions
-    h, w = image_shape[:2]
-    points_2d = points[:, :2]  # Take only x,y coordinates
-    
-    # Scale points to image coordinates
-    points_2d[:, 0] = (points_2d[:, 0] - points_2d[:, 0].min()) / (points_2d[:, 0].max() - points_2d[:, 0].min()) * w
-    points_2d[:, 1] = (points_2d[:, 1] - points_2d[:, 1].min()) / (points_2d[:, 1].max() - points_2d[:, 1].min()) * h
-    
-    # Convert to integer coordinates
-    points_2d = points_2d.astype(int)
-    
-    # Filter points that are within the mask
-    valid_points = []
-    for i, (x, y) in enumerate(points_2d):
-        if 0 <= x < w and 0 <= y < h and mask[y, x]:
-            valid_points.append(points[i])
-    
-    return np.array(valid_points)
-
 def run_tracking(image_folder, checkpoint_path="./checkpoints/sam/mobile_sam.pt"):
     # Load model
     predictor, device = setup_model(checkpoint_path=checkpoint_path)
 
-    # Load images and PCDs
-    image_paths = load_images_sorted(image_folder)
-    pcd_paths = load_pcd_sorted(image_folder)
-    print(f"Found {len(image_paths)} images and {len(pcd_paths)} PCD files.")
+    # Load images
+    rgb_paths, depth_paths = load_images_sorted(image_folder)
+    print(f"Found {len(rgb_paths)} RGB images and {len(depth_paths)} depth images.")
 
-    if len(image_paths) < 2 or len(pcd_paths) < 2:
-        print("Need at least 2 images and PCD files.")
+    if len(rgb_paths) < 2:
+        print("Need at least 2 RGB images.")
         return
 
     # Create output directories
-    base_dir = os.path.dirname(image_paths[0])
+    base_dir = os.path.dirname(rgb_paths[0])
     masks_dir = os.path.join(base_dir, 'masks')
     output_dir = os.path.join(base_dir, 'output_images')
-    pcd_dir = os.path.join(base_dir, 'cropped_pcds')
+    pcd_dir = os.path.join(base_dir, 'pcds')
+    cropped_pcd_dir = os.path.join(base_dir, 'cropped_pcds')
     os.makedirs(masks_dir, exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(pcd_dir, exist_ok=True)
-    print(f"Created output directories: {masks_dir}, {output_dir}, and {pcd_dir}")
+    os.makedirs(cropped_pcd_dir, exist_ok=True)
+    print(f"Created output directories: {masks_dir}, {output_dir}, {pcd_dir}, and {cropped_pcd_dir}")
 
     # Load first image
-    prev_img = cv2.imread(image_paths[0])
+    prev_img = cv2.imread(rgb_paths[0])
     if prev_img is None:
-        print(f"Failed to load image: {image_paths[0]}")
+        print(f"Failed to load image: {rgb_paths[0]}")
         return
 
     # Let user select point
@@ -221,21 +211,21 @@ def run_tracking(image_folder, checkpoint_path="./checkpoints/sam/mobile_sam.pt"
     mask = masks[0]
     
     # Save mask
-    mask_filename = os.path.join(masks_dir, os.path.basename(image_paths[0]).replace('.png', '_mask.png'))
+    mask_filename = os.path.join(masks_dir, os.path.basename(rgb_paths[0]).replace('.png', '_mask.png'))
     cv2.imwrite(mask_filename, (mask * 255).astype(np.uint8))
     print(f"Saved first mask: {mask_filename}")
     
     # Save visualization
     vis_img = create_visualization(prev_img, mask, prev_point)
-    vis_filename = os.path.join(output_dir, os.path.basename(image_paths[0]).replace('.png', '_vis.png'))
+    vis_filename = os.path.join(output_dir, os.path.basename(rgb_paths[0]).replace('.png', '_vis.png'))
     cv2.imwrite(vis_filename, vis_img)
     print(f"Saved first visualization: {vis_filename}")
 
     # Process remaining frames
-    for idx in range(1, len(image_paths)):
-        curr_img = cv2.imread(image_paths[idx])
+    for idx in range(1, len(rgb_paths)):
+        curr_img = cv2.imread(rgb_paths[idx])
         if curr_img is None:
-            print(f"Failed to load image: {image_paths[idx]}")
+            print(f"Failed to load image: {rgb_paths[idx]}")
             continue
 
         # Get the center of the previous mask as the prompt point
@@ -257,36 +247,48 @@ def run_tracking(image_folder, checkpoint_path="./checkpoints/sam/mobile_sam.pt"
         mask = masks[0]
         
         # Save mask
-        mask_filename = os.path.join(masks_dir, os.path.basename(image_paths[idx]).replace('.png', '_mask.png'))
+        mask_filename = os.path.join(masks_dir, os.path.basename(rgb_paths[idx]).replace('.png', '_mask.png'))
         cv2.imwrite(mask_filename, (mask * 255).astype(np.uint8))
         print(f"Saved mask for frame {idx}: {mask_filename}")
         
         # Save visualization
         vis_img = create_visualization(curr_img, mask, next_point)
-        vis_filename = os.path.join(output_dir, os.path.basename(image_paths[idx]).replace('.png', '_vis.png'))
+        vis_filename = os.path.join(output_dir, os.path.basename(rgb_paths[idx]).replace('.png', '_vis.png'))
         cv2.imwrite(vis_filename, vis_img)
         print(f"Saved visualization for frame {idx}: {vis_filename}")
 
-        # Process corresponding PCD file
-        if idx < len(pcd_paths):
+        # Process corresponding depth image
+        if idx < len(depth_paths):
             try:
-                # Read PCD file
-                points = read_pcd_file(pcd_paths[idx])
+                # Read depth image
+                depth_img = cv2.imread(depth_paths[idx], cv2.IMREAD_ANYDEPTH)
+                if depth_img is None:
+                    print(f"Failed to load depth image: {depth_paths[idx]}")
+                    continue
+
+                # Convert depth image to full point cloud
+                points = depth_to_pointcloud(depth_img)
                 
-                # Crop point cloud using the mask
-                cropped_points = crop_point_cloud(points, mask, curr_img.shape)
+                # Save full point cloud
+                pcd_filename = os.path.join(pcd_dir, os.path.basename(depth_paths[idx]).replace('.png', '.pcd'))
+                write_pcd_file(points, pcd_filename)
+                print(f"Saved full point cloud for frame {idx}: {pcd_filename}")
+
+                # Convert depth image to cropped point cloud using mask
+                cropped_points = depth_to_pointcloud(depth_img, mask)
                 
                 # Save cropped point cloud
-                pcd_filename = os.path.join(pcd_dir, os.path.basename(pcd_paths[idx]).replace('.pcd', '_cropped.pcd'))
-                write_pcd_file(cropped_points, pcd_filename)
-                print(f"Saved cropped point cloud for frame {idx}: {pcd_filename}")
+                cropped_pcd_filename = os.path.join(cropped_pcd_dir, os.path.basename(depth_paths[idx]).replace('.png', '_cropped.pcd'))
+                write_pcd_file(cropped_points, cropped_pcd_filename)
+                print(f"Saved cropped point cloud for frame {idx}: {cropped_pcd_filename}")
+
             except Exception as e:
-                print(f"Error processing PCD file for frame {idx}: {str(e)}")
+                print(f"Error processing depth image for frame {idx}: {str(e)}")
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='Track and segment objects in image sequence')
-    parser.add_argument('--image_folder', type=str, default="../assets/rs_data/test_images_2", help='Folder containing image sequence')
+    parser.add_argument('--image_folder', type=str, default="../assets/rs_data/test_images_3", help='Folder containing image sequence')
     parser.add_argument('--checkpoint', type=str, default="../checkpoints/sam/mobile_sam.pt", 
                       help='Path to MobileSAM checkpoint')
     args = parser.parse_args()

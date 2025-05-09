@@ -28,6 +28,8 @@ setup(
             'capture_and_segment = ip.segmentation.capture_and_segment:main',
             'joint_state_logger = ip.data_collection.joint_state_logger:main',
             'camera_node = ip.segmentation.camera_node:main',
+            'live_segmentation = ip.segmentation.live_segmentation:main',
+            'live_segmentation_with_pose = ip.segmentation.live_segmentation_with_pose:main',
         ],
     },
 )
