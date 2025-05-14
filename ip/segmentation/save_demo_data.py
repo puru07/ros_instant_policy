@@ -68,7 +68,7 @@ class PointSelector:
         return self.point
 
 class LiveSegmentationWithPoseNode(Node):
-    def __init__(self, checkpoint_path):
+    def __init__(self, checkpoint_path, hz=5):
         super().__init__('live_segmentation_with_pose_node')
 
         # Initialize data holder and bridge
@@ -98,7 +98,7 @@ class LiveSegmentationWithPoseNode(Node):
         # Initialize saving variables
         self.save_dir = None
         self.last_save_time = 0.0
-        self.save_interval = 0.2  # 5 Hz
+        self.save_interval = 1/hz  # 5 Hz
         self.first_frame_time = None
 
         # Initialize TF listener
@@ -485,12 +485,13 @@ def main(args=None):
 
     # Get checkpoint path from ROS2 parameters
     node = Node('parameter_node')
-    checkpoint_default_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'checkpoints', 'sam','mobile_sam/pt')
+    checkpoint_default_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'checkpoints', 'sam','mobile_sam.pt')
     checkpoint_path = node.declare_parameter('checkpoint', checkpoint_default_dir).value
+    hz_to_save_data = node.declare_parameter('frequency', 5).value
     node.destroy_node()
     
     # Create and run the main node
-    node = LiveSegmentationWithPoseNode(checkpoint_path)
+    node = LiveSegmentationWithPoseNode(checkpoint_path, hz_to_save_data)
 
     try:
         rclpy.spin(node)
