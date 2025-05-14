@@ -1,3 +1,37 @@
+#!/usr/bin/env python3
+
+"""
+Cartesian Motion Evaluation Script
+
+This script implements a robust Cartesian motion evaluation for robotic tasks using MoveIt.
+It uses Cartesian path planning (GetCartesianPath) to execute trajectories in task space,
+ensuring straight-line movements in Cartesian space.
+
+Key Features:
+1. Uses GetCartesianPath service for Cartesian path planning
+2. Plans paths in task space (straight lines in Cartesian space)
+3. Robust demo collection with retry logic
+4. Comprehensive error handling and success tracking
+5. Progress tracking with tqdm
+6. Configurable trajectory waypoints
+7. Default task: 'open_box'
+
+Main Differences from eval_pose_control.py:
+1. Uses Cartesian path planning instead of kinematic path planning
+2. More robust error handling and retry logic
+3. Better progress tracking and logging
+4. Different coordinate transformation for UR5 workspace
+5. Success rate tracking for rollouts
+6. Maximum execution steps limit
+7. More detailed configuration handling
+
+Usage:
+    ros2 run ip eval_cartesian_motion --ros-args --task_name <task_name> --num_demos <num> --num_rollouts <num>
+
+Example:
+    ros2 run ip eval_cartesian_motion --ros-args --task_name open_box --num_demos 1 --num_rollouts 1
+"""
+
 import sys
 
 sys.path.insert(0, '/home/mcqueen/anaconda3/envs/ip_env/lib/python3.10/site-packages')  # Adjust this path

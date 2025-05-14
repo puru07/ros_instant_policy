@@ -159,16 +159,16 @@ class LiveSegmentationWithPoseNode(Node):
             self.get_logger().info(f"Created save directories in: {self.save_dir}")
 
     def get_tool0_pose(self):
-        """Get the current pose of tool0 relative to base_link using image timestamp."""
+        """Get the current pose of tool0 relative to base_link using the latest available transform."""
         try:
             if self.latest_data['rgb_image'] is None:
                 return None
 
-            stamp = self.latest_data['rgb_image'].header.stamp
+            # Always use latest available transform
             trans = self.tf_buffer.lookup_transform(
                 self.base_frame,
                 self.tool_frame,
-                stamp,
+                rclpy.time.Time(),  # This will get the latest available transform
                 timeout=rclpy.duration.Duration(seconds=0.5)
             )
 
@@ -182,7 +182,6 @@ class LiveSegmentationWithPoseNode(Node):
         except Exception as e:
             self.get_logger().warn(f'Could not get tool0 pose: {str(e)}')
             return None
-
 
     def save_pose(self, timestamp, pose):
         """Save the tool0 pose to file."""
@@ -242,13 +241,9 @@ class LiveSegmentationWithPoseNode(Node):
             for point in points:
                 f.write(f"{point[0]} {point[1]} {point[2]}\n")
 
-    def save_frame(self, rgb_image, vis_image, depth_image, mask):
+    def save_frame(self, rgb_image, vis_image, depth_image, mask, pose):
         """Save RGB, visualization, depth images, cropped PCD files, and tool0 pose if enough time has passed."""
         # Get tool0 pose first - check before any processing
-        pose = self.get_tool0_pose()
-        if pose is None:
-            self.get_logger().warn("Skipping frame save: No tool0 transform available")
-            return
 
         current_time = self.get_clock().now().to_msg().sec + self.get_clock().now().to_msg().nanosec * 1e-9
         
@@ -342,9 +337,26 @@ class LiveSegmentationWithPoseNode(Node):
         return vis_img
 
     def visualization_callback(self):
+        """
+        Main visualization and processing callback that runs at ~30 FPS.
+        
+        This function:
+        1. Converts ROS image messages to OpenCV format
+        2. Manages the point selection process for object tracking
+        3. Runs the MobileSAM segmentation model on selected points
+        4. Creates and displays visualizations with segmentation masks
+        5. Saves frames and associated data (RGB, depth, poses, etc.) at 5 Hz
+        
+        The function handles both the initial point selection phase and the ongoing
+        tracking phase, updating the segmentation mask based on the previous mask's
+        center of mass.
+        """
         if self.latest_data['rgb_image'] is None or self.latest_data['depth_image'] is None:
             return
+        # checking for the tool0 pose
+        pose = self.get_tool0_pose()
 
+        
         try:
             # Convert ROS Image messages to OpenCV format
             rgb_cv = self.bridge.imgmsg_to_cv2(self.latest_data['rgb_image'], "bgr8")
@@ -372,6 +384,7 @@ class LiveSegmentationWithPoseNode(Node):
             
             # If we have a mask, update it using the center of the previous mask
             elif self.current_mask is not None:
+
                 # Get the center of the previous mask as the prompt point
                 next_point = self.get_mask_center(self.current_mask)
                 if next_point is not None:
@@ -390,10 +403,14 @@ class LiveSegmentationWithPoseNode(Node):
 
             # Create visualization
             if self.current_mask is not None:
+                # check for the tool0 pose
+                if pose is None: 
+                    self.get_logger().warn("Skipping frame save: No tool0 transform available")
+                    return
                 vis_img = self.create_visualization(rgb_cv, self.current_mask, self.selected_point)
                 cv2.imshow(self.point_selector.window_name, vis_img)
                 # Save frames if we have a mask
-                self.save_frame(rgb_cv, vis_img, depth_cv, self.current_mask)
+                self.save_frame(rgb_cv, vis_img, depth_cv, self.current_mask, pose)
             else:
                 cv2.imshow(self.point_selector.window_name, rgb_cv)
 
@@ -408,7 +425,6 @@ class LiveSegmentationWithPoseNode(Node):
 def main(args=None):
     # Initialize ROS2
     rclpy.init(args=args)
-
 
     # Get checkpoint path from ROS2 parameters
     node = Node('parameter_node')

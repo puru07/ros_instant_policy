@@ -1,3 +1,25 @@
+#!/usr/bin/env python3
+
+"""
+Pose Control Evaluation Script
+
+This script implements a simple pose-based control evaluation for robotic tasks using MoveIt.
+It uses kinematic path planning (GetMotionPlan) to execute trajectories in joint space.
+
+Key Features:
+1. Uses GetMotionPlan service for kinematic path planning
+2. Plans paths in joint space (not Cartesian space)
+3. Simple pose transformation for UR5 workspace
+4. Basic demo collection without retries
+5. Default task: 'plate_out'
+
+Usage:
+    ros2 run ip eval_pose_control --ros-args --task_name <task_name> --num_demos <num> --num_rollouts <num>
+
+Example:
+    ros2 run ip eval_pose_control --ros-args --task_name plate_out --num_demos 1 --num_rollouts 1
+"""
+
 import sys
 
 sys.path.insert(0, '/home/mcqueen/anaconda3/envs/ip_env/lib/python3.10/site-packages')  # Adjust this path
