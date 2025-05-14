@@ -124,13 +124,6 @@ class RolloutPoseNode(Node):
                 except:
                     continue
 
-
-
-        # chatgpt wrote the for loop below, to replace the for loop above
-        # for i in range(self.num_demos):
-        #     demos = task.get_demos(1, live_demos=True)
-        #     sample = rl_bench_demo_to_sample(demos[0])
-        #     full_sample['demos'][i] = sample_to_cond_demo(sample, 10)
         successes = []
         for i in trange(self.num_rollouts):
             task.reset()
@@ -141,6 +134,9 @@ class RolloutPoseNode(Node):
             for k in range(max_execution_steps):
                 curr_obs = task.get_observation()
                 T_w_e = pose_to_transform(curr_obs.gripper_pose)
+                print("\nCurrent end effector transform (T_w_e):")
+                print(T_w_e)
+                print(type(T_w_e))
                 pcd = transform_pcd(subsample_pcd(get_point_cloud(curr_obs)), np.linalg.inv(T_w_e))
                 full_sample['live'] = {
                     'obs': [pcd],
@@ -149,6 +145,9 @@ class RolloutPoseNode(Node):
                     'T_w_es': [T_w_e],
                     'actions': [T_w_e.reshape(1, 4, 4).repeat(8, axis=0)]
                 }
+                print("\nTransform being fed to diffusion model (T_w_e):")
+                print(full_sample['live']['T_w_es'][0])
+                print(type(full_sample['live']['T_w_es'][0]))
                 data = save_sample(full_sample, None)
                 device = self.model.config['device']
 
@@ -166,12 +165,13 @@ class RolloutPoseNode(Node):
                         actions, grips = self.model.test_step(data.to(device), 0)
                     actions = actions.squeeze().cpu().numpy()
                     grips = grips.squeeze().cpu().numpy()
-
-                # 🧭 Plan a full cartesian path over the predicted poses
-                
+                    print("\nPredicted actions (transforms):")
+                    print(actions)
 
                 for j in range(execution_horizon):
                     pose_mat = T_w_e @ actions[j]
+                    print(f"\nPose matrix for step {j} (T_w_e @ actions[j]):")
+                    print(pose_mat)
                     pose = self.create_pose(pose_mat)
                     request = self.createCartesiaRequest()
                     request.waypoints.append(pose)
@@ -202,7 +202,6 @@ class RolloutPoseNode(Node):
                     rclpy.spin_until_future_complete(self, send_goal_future)
                     # result_future = send_goal_future.result().get_result_async()
                     # rclpy.spin_until_future_complete(self, result_future)
-
 
                 successes.append(success)
         env.shutdown()

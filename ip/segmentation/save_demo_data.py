@@ -10,6 +10,7 @@ and tracks the robot's tool0 pose. It allows users to:
 3. Generate segmentation masks in real-time
 4. Create visualization showing the tracked object and segmentation
 5. Save RGB images, visualizations, cropped depth images, PCD files, and tool0 poses at 5 Hz
+6. Save transformation matrices in a pickle file
 
 Usage:
     ros2 run ip live_segmentation_with_pose --ros-args --checkpoint <path_to_mobile_sam_checkpoint>
@@ -30,8 +31,10 @@ import argparse
 from datetime import datetime
 import os
 import sys
+import pickle
 from tf2_ros import Buffer, TransformListener
 from geometry_msgs.msg import TransformStamped
+from scipy.spatial.transform import Rotation as R
 
 class PointSelector:
     def __init__(self):
@@ -156,6 +159,17 @@ class LiveSegmentationWithPoseNode(Node):
                 f.write("# Tool0 poses relative to base_link\n")
                 f.write("# Format: timestamp, x, y, z, qx, qy, qz, qw\n")
             
+            # Initialize transform data storage
+            self.transforms = {
+                'timestamps': [],
+                'matrices': [],
+                'translations': [],
+                'rotations': []
+            }
+            
+            # Create transform pickle file path
+            self.transform_file = os.path.join(self.save_dir, 'tool0_transforms.pkl')
+            
             self.get_logger().info(f"Created save directories in: {self.save_dir}")
 
     def get_tool0_pose(self):
@@ -175,6 +189,22 @@ class LiveSegmentationWithPoseNode(Node):
             translation = trans.transform.translation
             rotation = trans.transform.rotation
 
+            # Create transformation matrix
+            T = np.eye(4)
+            T[:3, 3] = [translation.x, translation.y, translation.z]
+            T[:3, :3] = R.from_quat([rotation.x, rotation.y, rotation.z, rotation.w]).as_matrix()
+
+            # Store transform data
+            timestamp = trans.header.stamp.sec + trans.header.stamp.nanosec * 1e-9
+            self.transforms['timestamps'].append(timestamp)
+            self.transforms['matrices'].append(T)
+            self.transforms['translations'].append([translation.x, translation.y, translation.z])
+            self.transforms['rotations'].append([rotation.x, rotation.y, rotation.z, rotation.w])
+
+            # Save transforms periodically (every 100 transforms)
+            if len(self.transforms['timestamps']) % 100 == 0:
+                self.save_transforms()
+
             return {
                 'translation': (translation.x, translation.y, translation.z),
                 'rotation': (rotation.x, rotation.y, rotation.z, rotation.w)
@@ -183,14 +213,41 @@ class LiveSegmentationWithPoseNode(Node):
             self.get_logger().warn(f'Could not get tool0 pose: {str(e)}')
             return None
 
+    def save_transforms(self):
+        """Save collected transforms to pickle file."""
+        with open(self.transform_file, 'wb') as f:
+            pickle.dump(self.transforms, f)
+        self.get_logger().info(f"Saved {len(self.transforms['timestamps'])} transforms")
+
+    def cleanup(self):
+        """Save final transforms and cleanup."""
+        if hasattr(self, 'transforms'):
+            self.save_transforms()
+            self.get_logger().info(f"Final save complete. Total transforms: {len(self.transforms['timestamps'])}")
+
     def save_pose(self, timestamp, pose):
         """Save the tool0 pose to file."""
         if pose is None:
             return
         
+        # Convert pose to transform matrix
+        T = np.eye(4)
+        tx, ty, tz = pose['translation']
+        qx, qy, qz, qw = pose['rotation']
+        
+        # Set translation
+        T[:3, 3] = [tx, ty, tz]
+        
+        # Set rotation
+        T[:3, :3] = R.from_quat([qx, qy, qz, qw]).as_matrix()
+        
+        # Print transform matrix
+        print("\nTransform matrix being saved:")
+        print(T)
+        print(f"Type: {type(T)}")
+        
+        # Save to file
         with open(self.pose_file, 'a') as f:
-            tx, ty, tz = pose['translation']
-            qx, qy, qz, qw = pose['rotation']
             f.write(f"{timestamp:.3f}, {tx:.6f}, {ty:.6f}, {tz:.6f}, {qx:.6f}, {qy:.6f}, {qz:.6f}, {qw:.6f}\n")
 
     def depth_to_pointcloud(self, depth_img, mask=None):
@@ -428,7 +485,8 @@ def main(args=None):
 
     # Get checkpoint path from ROS2 parameters
     node = Node('parameter_node')
-    checkpoint_path = node.declare_parameter('checkpoint', '../checkpoints/sam/mobile_sam.pt').value
+    checkpoint_default_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'checkpoints', 'sam','mobile_sam/pt')
+    checkpoint_path = node.declare_parameter('checkpoint', checkpoint_default_dir).value
     node.destroy_node()
     
     # Create and run the main node
@@ -437,7 +495,7 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        pass
+        node.cleanup()
     finally:
         cv2.destroyAllWindows()
         node.destroy_node()
