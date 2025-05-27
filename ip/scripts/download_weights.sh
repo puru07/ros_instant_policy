@@ -1,2 +1,2 @@
 # Downloading the weights
-gdown --folder https://drive.google.com/drive/folders/1hfyQ0DhZ8sCLrrH7dmE4WLMIibxZGVpI?usp=sharing
+gdown --folder https://drive.google.com/drive/folders/1OWAxsZfDlLTE991l8iNqvdW6bPk45EhF?usp=sharing
