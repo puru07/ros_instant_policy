@@ -30,6 +30,7 @@ setup(
             'live_segmentation = ip.segmentation.unit_tests.live_segmentation:main',
             'save_demo_data = ip.segmentation.save_demo_data:main',
             'save_tool0_transforms = ip.segmentation.unit_tests.save_tool0_transforms:main',
+            'deployment_on_ur = ip.deployment_on_ur:main',
         ],
     },
 )

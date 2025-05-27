@@ -11,6 +11,7 @@ and tracks the robot's tool0 pose. It allows users to:
 4. Create visualization showing the tracked object and segmentation
 5. Save RGB images, visualizations, cropped depth images, PCD files, and tool0 poses at 5 Hz
 6. Save transformation matrices in a pickle file
+7. Publish cropped point cloud in real-time
 
 Usage:
     ros2 run ip live_segmentation_with_pose --ros-args --checkpoint <path_to_mobile_sam_checkpoint>
@@ -21,7 +22,8 @@ Example:
 
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image, CameraInfo
+from sensor_msgs.msg import Image, CameraInfo, PointCloud2, PointField
+from std_msgs.msg import Header
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
@@ -35,11 +37,12 @@ import pickle
 from tf2_ros import Buffer, TransformListener
 from geometry_msgs.msg import TransformStamped
 from scipy.spatial.transform import Rotation as R
+import struct
 
 class PointSelector:
     def __init__(self):
         self.point = None
-        self.window_name = "Live Camera Feed - Click on object to track, press 'q' to quit"
+        self.window_name = "Live Camera Feed - Click on object to track, press 's' to start saving, 'q' to quit"
 
     def mouse_callback(self, event, x, y, flags, param):
         if event == cv2.EVENT_LBUTTONDOWN:
@@ -60,10 +63,8 @@ class PointSelector:
         # Show image and wait for point selection
         cv2.imshow(self.window_name, self.image)
         
-        while True:
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
-                break
+        # Wait for a short time to allow the window to be created
+        cv2.waitKey(1)
         
         return self.point
 
@@ -117,16 +118,20 @@ class LiveSegmentationWithPoseNode(Node):
         rgb_topic = '/camera/camera/color/image_raw'
         depth_topic = '/camera/camera/aligned_depth_to_color/image_raw'
         color_info_topic = '/camera/camera/color/camera_info'
+        self.pointcloud_topic = '/segmented_pointcloud'
 
         # Subscribers
         self.rgb_sub = self.create_subscription(Image, rgb_topic, self.rgb_callback, 10)
         self.depth_sub = self.create_subscription(Image, depth_topic, self.depth_callback, 10)
         self.color_info_sub = self.create_subscription(CameraInfo, color_info_topic, self.color_info_callback, 10)
+        
+        # Publisher for segmented point cloud
+        self.pointcloud_pub = self.create_publisher(PointCloud2, self.pointcloud_topic, 10)
 
         # Create timer for visualization
         self.timer = self.create_timer(0.033, self.visualization_callback)  # ~30 FPS
 
-        self.get_logger().info("LiveSegmentationWithPoseNode started and subscribed to topics.")
+        self.get_logger().info("========== LiveSegmentationWithPoseNode started and subscribed to topics. ==========")
 
     def setup_save_directories(self):
         """Create directories for saving images, PCD files, and poses."""
@@ -251,30 +256,35 @@ class LiveSegmentationWithPoseNode(Node):
             f.write(f"{timestamp:.3f}, {tx:.6f}, {ty:.6f}, {tz:.6f}, {qx:.6f}, {qy:.6f}, {qz:.6f}, {qw:.6f}\n")
 
     def depth_to_pointcloud(self, depth_img, mask=None):
-        """Convert depth image to point cloud using camera intrinsics.
-        If mask is provided, only return points within the masked region."""
-        # Ensure depth image is 2D
+        """Convert depth image to point cloud using camera intrinsics."""
         if len(depth_img.shape) > 2:
-            depth_img = depth_img[:, :, 0]  # Take first channel if 3D
+            depth_img = depth_img[:, :, 0]
         
         rows, cols = depth_img.shape
         c, r = np.meshgrid(np.arange(cols), np.arange(rows))
         
-        # Apply mask if provided
         if mask is not None:
             valid = (depth_img > 0) & mask
         else:
             valid = depth_img > 0
         
-        # Reshape arrays to match
-        z = depth_img[valid].flatten()
+        # Convert depth from millimeters to meters
+        z = depth_img[valid].flatten() / 1000.0  # Convert to meters
         x = ((c[valid] - self.cx) * z / self.fx).flatten()
         y = ((r[valid] - self.cy) * z / self.fy).flatten()
         
-        # Stack coordinates and remove any points with invalid values
         points = np.stack([x, y, z], axis=1)
         valid_points = ~np.any(np.isnan(points) | np.isinf(points), axis=1)
         points = points[valid_points]
+        
+        # Debug information
+        if len(points) > 0:
+            self.get_logger().info(f"Generated point cloud with {len(points)} points")
+            self.get_logger().info(f"Point cloud bounds - X: [{points[:,0].min():.2f}, {points[:,0].max():.2f}], "
+                                 f"Y: [{points[:,1].min():.2f}, {points[:,1].max():.2f}], "
+                                 f"Z: [{points[:,2].min():.2f}, {points[:,2].max():.2f}]")
+        else:
+            self.get_logger().warn("Generated empty point cloud!")
         
         return points
 
@@ -391,23 +401,55 @@ class LiveSegmentationWithPoseNode(Node):
             x, y = point[0].astype(int)
             cv2.circle(vis_img, (x, y), 5, (0, 255, 0), -1)  # Green circle for point
         
+        # Add saving status indicator
+        if hasattr(self, 'saving_started') and self.saving_started:
+            cv2.putText(vis_img, "SAVING", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        
         return vis_img
 
+    def point_cloud_to_ros2(self, points):
+        """Convert numpy array of points to ROS2 PointCloud2 message."""
+        # Create header
+        header = Header()
+        header.stamp = self.get_clock().now().to_msg()
+        header.frame_id = 'camera_color_optical_frame'  # Adjust this to your camera frame
+        
+        # Create fields
+        fields = [
+            PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+            PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
+            PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1)
+        ]
+        
+        # Convert points to bytes
+        points_bytes = points.astype(np.float32).tobytes()
+        
+        # Create PointCloud2 message
+        msg = PointCloud2()
+        msg.header = header
+        msg.fields = fields
+        msg.point_step = 12  # 3 * 4 bytes (float32)
+        msg.row_step = msg.point_step * len(points)
+        msg.height = 1
+        msg.width = len(points)
+        msg.is_dense = True
+        msg.data = points_bytes
+        
+        # Debug information
+        self.get_logger().info(f"Publishing point cloud with {len(points)} points")
+        
+        return msg
+
+    def publish_point_cloud(self, points):
+        """Publish point cloud if it's not empty."""
+        if len(points) > 0:
+            msg = self.point_cloud_to_ros2(points)
+            self.pointcloud_pub.publish(msg)
+            self.get_logger().debug("Published point cloud message")
+        else:
+            self.get_logger().warn("Skipping point cloud publication - empty point cloud")
+
     def visualization_callback(self):
-        """
-        Main visualization and processing callback that runs at ~30 FPS.
-        
-        This function:
-        1. Converts ROS image messages to OpenCV format
-        2. Manages the point selection process for object tracking
-        3. Runs the MobileSAM segmentation model on selected points
-        4. Creates and displays visualizations with segmentation masks
-        5. Saves frames and associated data (RGB, depth, poses, etc.) at 5 Hz
-        
-        The function handles both the initial point selection phase and the ongoing
-        tracking phase, updating the segmentation mask based on the previous mask's
-        center of mass.
-        """
         if self.latest_data['rgb_image'] is None or self.latest_data['depth_image'] is None:
             return
         # checking for the tool0 pose
@@ -436,6 +478,7 @@ class LiveSegmentationWithPoseNode(Node):
                         multimask_output=False
                     )
                     self.current_mask = masks[0]
+                    self.get_logger().info("Selected point and created initial mask")
                     # Setup save directories when first mask is generated
                     self.setup_save_directories()
             
@@ -460,24 +503,40 @@ class LiveSegmentationWithPoseNode(Node):
 
             # Create visualization
             if self.current_mask is not None:
-                # check for the tool0 pose
-                if pose is None: 
-                    self.get_logger().warn("Skipping frame save: No tool0 transform available")
-                    return
                 vis_img = self.create_visualization(rgb_cv, self.current_mask, self.selected_point)
                 cv2.imshow(self.point_selector.window_name, vis_img)
-                # Save frames if we have a mask
-                self.save_frame(rgb_cv, vis_img, depth_cv, self.current_mask, pose)
+                
+                # Check for 's' key to start saving
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('s'):
+                    if not hasattr(self, 'saving_started'):
+                        self.saving_started = True
+                        self.get_logger().info("Started saving data...")
+                elif key == ord('q'):
+                    cv2.destroyAllWindows()
+                    rclpy.shutdown()
+                
+                # Create and publish cropped point cloud
+                pcd_w = self.depth_to_pointcloud(depth_cv, self.current_mask)
+                self.publish_point_cloud(pcd_w)
+                
+                # Save frames if we have a mask and saving has started
+                if hasattr(self, 'saving_started') and self.saving_started:
+                    # check for the tool0 pose
+                    if pose is None: 
+                        self.get_logger().warn("Skipping frame save: No tool0 transform available")
+                        return
+                    self.save_frame(rgb_cv, vis_img, depth_cv, self.current_mask, pose)
             else:
                 cv2.imshow(self.point_selector.window_name, rgb_cv)
-
-            # Check for quit key
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                cv2.destroyAllWindows()
-                rclpy.shutdown()
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    cv2.destroyAllWindows()
+                    rclpy.shutdown()
 
         except Exception as e:
             self.get_logger().error(f"Error in visualization: {str(e)}")
+            import traceback
+            self.get_logger().error(traceback.format_exc())
 
 def main(args=None):
     # Initialize ROS2
