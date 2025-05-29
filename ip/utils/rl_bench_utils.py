@@ -83,6 +83,7 @@ def rollout_model(model, num_demos, task_name='phone_on_base', max_execution_ste
             T_w_e = pose_to_transform(curr_obs.gripper_pose)
             full_sample['live']['obs'] = [transform_pcd(subsample_pcd(get_point_cloud(curr_obs)),
                                                         np.linalg.inv(T_w_e))]
+            print(f"Processed point cloud size: {full_sample['live']['obs'][0].shape}")
             full_sample['live']['grips'] = [curr_obs.gripper_open]
             full_sample['live']['actions_grip'] = [np.zeros(8)]
             full_sample['live']['T_w_es'] = [T_w_e]

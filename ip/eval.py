@@ -1,13 +1,18 @@
+import sys
+
+# sys.path.insert(0, '/home/mcqueen/anaconda3/envs/ip_env/lib/python3.10/site-packages')  # Adjust this path
+
 from ip.models.diffusion import GraphDiffusion
 from ip.utils.rl_bench_utils import rollout_model
 import argparse
 import pickle
+import torch
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--task_name', type=str, default='plate_out')
-    parser.add_argument('--num_demos', type=int, default=2)
-    parser.add_argument('--num_rollouts', type=int, default=5)
+    parser.add_argument('--num_demos', type=int, default=1)
+    parser.add_argument('--num_rollouts', type=int, default=1)
     parser.add_argument('--restrict_rot', type=int, default=1)
     parser.add_argument('--compile_models', type=int, default=0)
     restrict_rot = bool(parser.parse_args().restrict_rot)
@@ -24,8 +29,7 @@ if __name__ == '__main__':
     config['num_demos'] = num_demos
     config['num_diffusion_iters_test'] = 4
 
-    model = GraphDiffusion.load_from_checkpoint(f'{model_path}/model.pt', config=config, strict=True,
-                                                map_location=config['device']).to(config['device'])
+    model = GraphDiffusion.load_from_checkpoint(f'{model_path}/model.pt', config=config, strict=True, map_location=torch.device('cpu'))
 
     model.model.reinit_graphs(1, num_demos=num_demos)
     model.eval()
