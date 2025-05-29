@@ -28,7 +28,7 @@ class AGI(torch.nn.Module):
         self.scene_encoder = SceneEncoder(num_freqs=10,
                                           embd_dim=config['local_nn_dim']).to(config['device'])
         if self.config['pre_trained_encoder']:
-            self.scene_encoder.load_state_dict(torch.load(config['scene_encoder_path'], map_location='cpu'))
+            self.scene_encoder.load_state_dict(torch.load(config['scene_encoder_path'], map_location=config['device']))
             if self.config['freeze_encoder']:
                 dfs_freeze(self.scene_encoder)
 
