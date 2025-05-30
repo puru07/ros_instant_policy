@@ -214,6 +214,9 @@ def main():
     checkpoint_default_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'checkpoints')
     model_path = './checkpoints'
     config = pickle.load(open(f'{model_path}/config.pkl', 'rb'))
+    
+
+    
     config['num_layers'] = 2
     config['device'] = 'cpu'
     config['compile_models'] = False
@@ -221,6 +224,13 @@ def main():
     config['num_demos'] = num_demos
     config['num_diffusion_iters_test'] = num_diffusion_iters
 
+    # Print all config values
+    print("\nConfiguration values:")
+    print("-" * 50)
+    for key, value in config.items():
+        print(f"{key}: {value}")
+    print("-" * 50)
+    
     model = GraphDiffusion.load_from_checkpoint(f'{model_path}/model.pt', config=config, strict=False,
                                                 map_location=config['device']).to(config['device'])
     model.model.reinit_graphs(1, num_demos=max(num_demos, 1))

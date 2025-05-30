@@ -286,21 +286,40 @@ class GraphRep(nn.Module):
         gripper_node_pos = torch.cat([gripper_node_pos.reshape(-1, 3),
                                       gripper_node_pos_current.reshape(-1, 3),
                                       gripper_node_pos_action.reshape(-1, 3)], dim=0)
-
+        ################
+        # Chat gpt helped me with this -- to solve the shape mismatch issue
         # data.graps_demos [B, D, T, 1]
-        gripper_states = self.gripper_proj(data.graps_demos[:, :self.num_demos])[..., None, :].repeat(1, 1, 1,
-                                                                                                      self.num_g_nodes,
-                                                                                                      1)
-        gripper_states = gripper_states.view(-1, self.g_state_dim)
-        gripper_states_current = self.gripper_proj(data.current_grip.unsqueeze(-1))[..., None, :].repeat(1,
-                                                                                                         self.num_g_nodes,
-                                                                                                         1)
-        gripper_states_current = gripper_states_current.view(-1, self.g_state_dim)
-        gripper_states_action = self.gripper_proj(data.actions_grip.unsqueeze(-1))[..., None, :].repeat(1, 1,
-                                                                                                        self.num_g_nodes,
-                                                                                                        1)
-        gripper_states_action = gripper_states_action.view(-1, self.g_state_dim)
-        gripper_states = torch.cat([gripper_states, gripper_states_current, gripper_states_action], dim=0)
+        # gripper_states = self.gripper_proj(data.graps_demos[:, :self.num_demos])[..., None, :].repeat(1, 1, 1,
+        #                                                                                               self.num_g_nodes,
+        #                                                                                               1)
+        # gripper_states = gripper_states.view(-1, self.g_state_dim)
+        # gripper_states_current = self.gripper_proj(data.current_grip.unsqueeze(-1))[..., None, :].repeat(1,
+        #                                                                                                  self.num_g_nodes,
+        #                                                                                                  1)
+        # gripper_states_current = gripper_states_current.view(-1, self.g_state_dim)
+        # gripper_states_action = self.gripper_proj(data.actions_grip.unsqueeze(-1))[..., None, :].repeat(1, 1,
+        #                                                                                                 self.num_g_nodes,
+        #                                                                                                 1)
+        # gripper_states_action = gripper_states_action.view(-1, self.g_state_dim)
+        # gripper_states = torch.cat([gripper_states, gripper_states_current, gripper_states_action], dim=0)
+        
+
+        # Compute gripper states per node using self.graph.gripper_embd shape
+        num_nodes = self.graph.gripper_embd.shape[0]
+        # Concatenate demo + current + action gripper inputs
+        all_gripper_inputs = torch.cat([
+            data.graps_demos[:, :self.num_demos].reshape(-1, 1),       # [B*D*T, 1]
+            data.current_grip.reshape(-1, 1),                          # [B, 1]
+            data.actions_grip.reshape(-1, 1)                           # [B*P, 1]
+        ], dim=0).repeat_interleave(self.num_g_nodes, dim=0)[:num_nodes]  # [num_nodes, 1]
+
+        # Pass through projection layer
+        gripper_states = self.gripper_proj(all_gripper_inputs)  # [num_nodes, 64]
+        
+        assert gripper_states.shape[0] == self.graph.gripper_embd.shape[0], \
+            f"Mismatch: gripper_states={gripper_states.shape[0]}, gripper_embd={self.graph.gripper_embd.shape[0]}"
+        
+        ###############
         gripper_embd = self.gripper_embds(self.graph.gripper_embd)
 
         # Adding diffusion time step information to gripper action nodes.
