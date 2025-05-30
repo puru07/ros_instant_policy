@@ -13,7 +13,7 @@ Code for the paper: "Instant Policy: In-Context Imitation Learning via Graph Dif
 
 ```
 git clone https://github.com/vv19/instant_policy.git
-cd instant_policy
+cd ros_instant_policy
 ```
 
 **Create conda environment**

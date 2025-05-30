@@ -310,6 +310,10 @@ class GraphRep(nn.Module):
                                                                               1).view(-1, self.d_time_dim)
         gripper_embd[self.graph.gripper_time > self.traj_horizon][:, -self.d_time_dim:] = d_time_embd
 
+
+        print("gripper_embd.shape:", gripper_embd.shape)
+        print("gripper_states.shape:", gripper_states.shape)
+        assert gripper_embd.shape[:-1] == gripper_states.shape[:-1], "Shape mismatch in concatenation inputs"
         gripper_embd = torch.cat([gripper_embd, gripper_states], dim=-1)
 
         scene_node_pos = torch.cat([

@@ -234,6 +234,11 @@ def subsample_pcd(sample, num_points=2048):
 
 
 def remove_statistical_outliers(point_cloud, nb_neighbors=20, std_ratio=2.0):
+    # Ensure point cloud is float64 and has the correct shape
+    point_cloud = np.asarray(point_cloud, dtype=np.float64)
+    if len(point_cloud.shape) != 2 or point_cloud.shape[1] != 3:
+        raise ValueError(f"Point cloud must be Nx3 array, got shape {point_cloud.shape}")
+    
     # Create a PointCloud object from the NumPy array
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(point_cloud)
@@ -243,5 +248,4 @@ def remove_statistical_outliers(point_cloud, nb_neighbors=20, std_ratio=2.0):
 
     # Convert the filtered PointCloud back to a NumPy array
     filtered_point_cloud = np.asarray(filtered_pcd.points)
-
     return filtered_point_cloud, inlier_indices

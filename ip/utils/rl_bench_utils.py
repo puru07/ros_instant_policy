@@ -58,10 +58,17 @@ def rollout_model(model, num_demos, task_name='phone_on_base', max_execution_ste
                 demos = task.get_demos(1, live_demos=True, max_attempts=1000)  # -> List[List[Observation]]
                 sample = rl_bench_demo_to_sample(demos[0])
                 full_sample['demos'][i] = sample_to_cond_demo(sample, num_traj_wp)
+                print(f"\nDemo {i} shapes:")
+                print("obs shape:", np.array(full_sample['demos'][i]['obs']).shape)
+                print("T_w_es shape:", np.array(full_sample['demos'][i]['T_w_es']).shape)
+                print("grips shape:", np.array(full_sample['demos'][i]['grips']).shape)
                 assert len(full_sample['demos'][i]['obs']) == num_traj_wp
                 done = True
             except:
                 continue
+
+    # Print keys of the first demo
+    print("Keys in full_sample['demos'][0]:", full_sample['demos'][0].keys())
 
     ####################################################################################################################
     successes = []
@@ -87,7 +94,15 @@ def rollout_model(model, num_demos, task_name='phone_on_base', max_execution_ste
             full_sample['live']['actions_grip'] = [np.zeros(8)]
             full_sample['live']['T_w_es'] = [T_w_e]
             full_sample['live']['actions'] = [full_sample['live']['T_w_es'][0].reshape(1, 4, 4).repeat(8, axis=0)]
+            print(f"\nLive Data {k} shapes:")
+            print("obs shape:", np.array(full_sample['live']['obs']).shape)
+            print("grips shape:", np.array(full_sample['live']['grips']).shape)
+            print("actions_grip shape:", np.array(full_sample['live']['actions_grip']).shape)
+            print("T_w_es shape:", np.array(full_sample['live']['T_w_es']).shape)
+            print("actions shape:", np.array(full_sample['live']['actions']).shape)
+            
             data = save_sample(full_sample, None)
+
 
             if k == 0:
                 demo_scene_node_embds, demo_scene_node_pos = model.model.get_demo_scene_emb(
@@ -97,7 +112,16 @@ def rollout_model(model, num_demos, task_name='phone_on_base', max_execution_ste
             data.live_scene_node_pos = live_scene_node_pos.clone()
             data.demo_scene_node_embds = demo_scene_node_embds.clone()
             data.demo_scene_node_pos = demo_scene_node_pos.clone()
-
+            # Print shapes after save_sample
+            print("\nData shapes after save_sample:")
+            if hasattr(data, 'demo_scene_node_embds'):
+                print("Demo scene node embeddings shape:", data.demo_scene_node_embds.shape)
+            if hasattr(data, 'live_scene_node_embds'):
+                print("Live scene node embeddings shape:", data.live_scene_node_embds.shape)
+            if hasattr(data, 'demo_scene_node_pos'):
+                print("Demo scene node positions shape:", data.demo_scene_node_pos.shape)
+            if hasattr(data, 'live_scene_node_pos'):
+                print("Live scene node positions shape:", data.live_scene_node_pos.shape)
             with torch.no_grad():
                 with torch.autocast(dtype=torch.float32, device_type=model.config['device']):
                     actions, grips = model.test_step(data.to(model.config['device']), 0)
