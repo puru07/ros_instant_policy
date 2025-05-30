@@ -126,6 +126,7 @@ def process_data(model, demo, live_data_list):
             else:
                 print(f"{key}: {type(value)}")
         
+        
         # Process each live data entry
         for i, live_data in enumerate(live_data_list):
             print(f"\nProcessing live data entry {i}")
@@ -155,34 +156,19 @@ def process_data(model, demo, live_data_list):
             # Convert to model input format
             data = save_sample(full_sample, None)
             
-            # Print shapes after save_sample
-            print("\nData shapes after save_sample:")
-            if hasattr(data, 'demo_scene_node_embds'):
-                print("Demo scene node embeddings shape:", data.demo_scene_node_embds.shape)
-            if hasattr(data, 'live_scene_node_embds'):
-                print("Live scene node embeddings shape:", data.live_scene_node_embds.shape)
-            if hasattr(data, 'demo_scene_node_pos'):
-                print("Demo scene node positions shape:", data.demo_scene_node_pos.shape)
-            if hasattr(data, 'live_scene_node_pos'):
-                print("Live scene node positions shape:", data.live_scene_node_pos.shape)
-            
             # For efficiency, pre-compute and cache geometry embeddings for the demos
-            demo_scene_node_embds, demo_scene_node_pos = model.model.get_demo_scene_emb(
-                data.to(model.config['device']))
+            if i == 0:
+                demo_scene_node_embds, demo_scene_node_pos = model.model.get_demo_scene_emb(
+                    data.to(model.config['device']))
             
             # Get live scene embeddings
             data.live_scene_node_embds, data.live_scene_node_pos =\
                 model.model.get_live_scene_emb(data.to(model.config['device']))
+            
             data.demo_scene_node_embds = demo_scene_node_embds.clone()
             data.demo_scene_node_pos = demo_scene_node_pos.clone()
             
-            # Print shapes after getting embeddings
-            print("\nData shapes after getting embeddings:")
-            print("Demo scene node embeddings shape:", data.demo_scene_node_embds.shape)
-            print("Live scene node embeddings shape:", data.live_scene_node_embds.shape)
-            print("Demo scene node positions shape:", data.demo_scene_node_pos.shape)
-            print("Live scene node positions shape:", data.live_scene_node_pos.shape)
-            
+
             # Inference on the model
             with torch.no_grad():
                 with torch.autocast(dtype=torch.float32, device_type=model.config['device']):
@@ -194,7 +180,7 @@ def process_data(model, demo, live_data_list):
             print(actions)
             print("Predicted grips:", grips.shape)
             
-            return actions, grips
+        return actions, grips
 
     except Exception as e:
         print(f"Error in processing: {str(e)}")
@@ -230,7 +216,7 @@ def main():
     for key, value in config.items():
         print(f"{key}: {value}")
     print("-" * 50)
-    
+
     model = GraphDiffusion.load_from_checkpoint(f'{model_path}/model.pt', config=config, strict=False,
                                                 map_location=config['device']).to(config['device'])
     model.model.reinit_graphs(1, num_demos=max(num_demos, 1))
@@ -273,8 +259,8 @@ def main():
     # Use the most recent folder for demo
     demo_folder = demo_folders[0]
     # Use the second most recent folder for live data
-    # live_data_folder = demo_folders[1]
-    live_data_folder = demo_folders[0]
+    live_data_folder = demo_folders[1]
+    # live_data_folder = demo_folders[0]
     
     print(f"\nUsing demo from: {os.path.basename(demo_folder)}")
     print(f"Using live data from: {os.path.basename(live_data_folder)}")
