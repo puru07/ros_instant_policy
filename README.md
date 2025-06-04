@@ -9,8 +9,7 @@ Code for the paper: "Instant Policy: In-Context Imitation Learning via Graph Dif
 
 ## Setup
 
-**Clone this repo**
-In the src folder of your ros workspace
+Clone this repo in the src folder of your ros workspace
 ```
 git clone git@github.com:puru07/ros_instant_policy.git -b main_ur5
 cd ros_instant_policy
@@ -42,7 +41,7 @@ export QT_QPA_PLATFORM_PLUGIN_PATH=$COPPELIASIM_ROOT
 ```
 
 
-###Install RLbench 
+### Install RLbench 
 follow the instructions in the https://github.com/stepjam/RLBench.
 
 
