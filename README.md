@@ -16,7 +16,7 @@ git clone git@github.com:puru07/ros_instant_policy.git -b main_ur5
 cd ros_instant_policy
 ```
 
-###Create conda environment
+### Create conda environment
 
 ```
 conda env create -f environment.yml
@@ -29,7 +29,7 @@ Install tinyxml
 sudo apt install libtinyxml2-9
 ```
 
-###Install Coppelia Sim
+### Install Coppelia Sim
 
 1. Download the edu version from this [LINK](https://www.coppeliarobotics.com/)
 2. Extract it to lets say ‘home’ dir ( ~/)
