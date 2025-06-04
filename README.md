@@ -10,13 +10,13 @@ Code for the paper: "Instant Policy: In-Context Imitation Learning via Graph Dif
 ## Setup
 
 **Clone this repo**
-
+In the src folder of your ros workspace
 ```
-git clone https://github.com/vv19/instant_policy.git
-cd instant_policy
+git clone git@github.com:puru07/ros_instant_policy.git -b main_ur5
+cd ros_instant_policy
 ```
 
-**Create conda environment**
+###Create conda environment
 
 ```
 conda env create -f environment.yml
@@ -24,8 +24,27 @@ conda activate ip_env
 pip install pyg-lib -f https://data.pyg.org/whl/torch-2.2.0+cu118.html
 pip install -e .
 ```
+Install tinyxml
+```
+sudo apt install libtinyxml2-9
+```
 
-Install RLbench by following the instructions in the https://github.com/stepjam/RLBench.
+###Install Coppelia Sim
+
+1. Download the edu version from this [LINK](https://www.coppeliarobotics.com/)
+2. Extract it to lets say ‘home’ dir ( ~/)
+3. Put this in your bashrc and source it ( I created an alias dev_cop for this)
+
+```
+export COPPELIASIM_ROOT=~/CoppeliaSim
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$COPPELIASIM_ROOT
+export QT_QPA_PLATFORM_PLUGIN_PATH=$COPPELIASIM_ROOT
+```
+
+
+###Install RLbench 
+follow the instructions in the https://github.com/stepjam/RLBench.
+
 
 ## Quick Start
 
@@ -41,10 +60,7 @@ cd ip
 Run inference.
 
 ```
-python eval.py \
- --task_name='plate_out' \
- --num_demos=2 \
- --num_rollouts=10
+python eval.py  --task_name='plate_out'  --num_demos=1  --num_rollouts=1
 ```
 
 Try it out with different tasks, e.g. `open_box` or `toilet_seat_down`! More in `utils/rl_bench_tasks.py`.
