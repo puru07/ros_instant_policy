@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- Node parameters -->
+    <arg name="model_path" default="$(find ros_instant_policy)/checkpoints"/>
+    <arg name="demo_base_dir" default="$(find ros_instant_policy)/ip/assets/rs_data"/>
+    
+    <!-- Instant Policy Node -->
+    <node pkg="ros_instant_policy" type="ros_instant_policy_node.py" name="instant_policy_node" output="screen">
+        <param name="model_path" value="$(arg model_path)"/>
+        <param name="demo_base_dir" value="$(arg demo_base_dir)"/>
+    </node>
+</launch> 
