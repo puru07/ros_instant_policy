@@ -7,6 +7,7 @@ import sys
 sys.path.insert(0, '/home/mcqueen/anaconda3/envs/ip_env/lib/python3.10/site-packages')  # Adjust this path
 
 import pickle
+import time
 from ip.models.diffusion import GraphDiffusion
 from ip.utils.data_proc import *
 import os
@@ -25,17 +26,33 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, Pose
 from moveit_msgs.msg import Constraints, PositionConstraint, OrientationConstraint, BoundingVolume
+from moveit_msgs.srv import GetMotionPlan
 from shape_msgs.msg import SolidPrimitive
 from moveit_msgs.srv import GetCartesianPath
 from moveit_msgs.action import ExecuteTrajectory
+
+
 from rclpy.action import ActionClient
 from std_msgs.msg import Float32MultiArray
+
+from tf2_ros import Buffer, TransformListener
 
 
 class InstantPolicyNode(Node):
     def __init__(self):
         super().__init__('instant_policy_node')
         
+        # Initialize transforms dictionary with default values
+        self.transforms = {
+            'timestamps': None,
+            'matrices': None,
+            'translations': None,
+            'rotations': None
+        }
+        
+        self.rate = self.create_rate(0.2)  # 0.2 Hz = 5 seconds
+
+
         # Initialize parameters
         self.declare_parameter('model_path', './checkpoints')
         self.declare_parameter('demo_base_dir', os.path.join(os.path.dirname(os.path.dirname(__file__)), 'ip', 'assets', 'rs_data'))
@@ -46,10 +63,12 @@ class InstantPolicyNode(Node):
         self.live_base_dir = self.get_parameter('live_base_dir').value
         
         # Initialize MoveIt services
+        self.plan_though_pose_client = self.create_client(GetMotionPlan, '/plan_kinematic_path')
         self.cartesian_client = self.create_client(GetCartesianPath, '/compute_cartesian_path')
         self.execute_client = ActionClient(self, ExecuteTrajectory, '/execute_trajectory')
 
         self.get_logger().info("Waiting for MoveIt services...")
+        self.plan_though_pose_client.wait_for_service()
         self.cartesian_client.wait_for_service()
         self.execute_client.wait_for_server()
         self.get_logger().info("Services ready.")
@@ -65,11 +84,17 @@ class InstantPolicyNode(Node):
         self.load_demo_data()
         self.load_live_data()
 
+        # Initialize TF listener
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.base_frame = 'base_link'
+        self.tool_frame = 'tool0'
 
         self.get_logger().info("Instant Policy Node initialized")
-        # Create timer to call process_data at 2 Hz
+        self.timer_tool0 = self.create_timer(0.1, self.get_tool0_pose)   # 10 Hz
+        # self.timer_process_data = self.create_timer(1, self.process_data)  
+        self.iter = 0
         self.process_data()
-        # self.timer = self.create_timer(0.5, self._timer_callback)
 
     def initialize_model(self):
         """Initialize the Instant Policy model."""
@@ -146,13 +171,6 @@ class InstantPolicyNode(Node):
         num_pcds = len(pcds)
         transforms['matrices'] = transforms['matrices'][:num_pcds]
         
-        # Create demo sample with both pcds and obs keys
-        # demo_sample = {
-        #     'pcds': pcds,
-        #     'obs': pcds,  # Add obs key with same data
-        #     'T_w_es': transforms['matrices'],
-        #     'grips': np.zeros(len(pcds))
-        # }
         demo_sample = {
             'obs': pcds,  # Add obs key with same data
             'T_w_es': transforms['matrices'],
@@ -266,28 +284,81 @@ class InstantPolicyNode(Node):
     def _timer_callback(self):
         """Timer callback to process data at 2 Hz."""
         self.process_data()
-        
+    
+    def get_tool0_pose(self):
+        """Get the current pose of tool0 relative to base_link using the latest available transform."""
+        try:
+            # Wait for transform to be available
+            # Log available frames to debug
+            self.tf_buffer.can_transform(
+                self.base_frame,
+                self.tool_frame,
+                rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=1.0)
+            )
+            # Get the transform
+            trans = self.tf_buffer.lookup_transform(
+                self.base_frame,
+                self.tool_frame,
+                rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=0.5)
+            )
+            print('updated the transform')
+            translation = trans.transform.translation
+            rotation = trans.transform.rotation
+
+            # Create transformation matrix
+            T = np.eye(4)
+            T[:3, 3] = [translation.x, translation.y, translation.z]
+            T[:3, :3] = R.from_quat([rotation.x, rotation.y, rotation.z, rotation.w]).as_matrix()
+
+            # Store transform data
+            timestamp = trans.header.stamp.sec + trans.header.stamp.nanosec * 1e-9
+            self.transforms['timestamps'] = timestamp
+            self.transforms['matrices'] = T
+            self.transforms['translations'] = [translation.x, translation.y, translation.z]
+            self.transforms['rotations'] = [rotation.x, rotation.y, rotation.z, rotation.w]
+
+            return self.transforms
+        except Exception as e:
+            self.get_logger().warn(f'Could not get tool0 pose: {str(e)}')
+            # Return None but keep the transforms dictionary initialized
+            return None
+ 
     def process_data(self):
         """Process the loaded data through the model."""
-        try:
-            # Debug logging to check data structure
-            self.get_logger().info(f"Demo sample keys: {self.demo_sample.keys()}")
-            # if 'pcds' in self.demo_sample:
-            #     self.get_logger().info(f"Demo sample pcds type: {type(self.demo_sample['pcds'])}")
-            #     self.get_logger().info(f"Demo sample pcds length: {len(self.demo_sample['pcds'])}")
-            
-            # # Check if we need to rename pcds to obs
-            # if 'pcds' in self.demo_sample and 'obs' not in self.demo_sample:
-            #     self.demo_sample['obs'] = self.demo_sample.pop('pcds')
-            
-            full_sample = {
-                'demos': [self.demo_sample],
-                'live': dict(),
-            }
-            execution_horizon = 8 # should be same as the number of actions in the output of the model
 
-            for i, live_data in enumerate(self.live_sample):
-                T_w_e = live_data['T_w_es'][0]
+        while rclpy.ok():
+            if self.iter == len(self.live_sample):
+                self.get_logger().info("Finished processing live data")
+                return None, None
+            try:
+                # Debug logging to check data structure
+                self.get_logger().info(f"Demo sample keys: {self.demo_sample.keys()}")
+
+                full_sample = {
+                    'demos': [self.demo_sample],
+                    'live': dict(),
+                }
+                execution_horizon = 8  # should be same as the number of actions in the output of the model
+                
+                # Get current tool0 pose
+                # tool0_pose = self.get_tool0_pose()
+                # while tool0_pose is None or self.transforms['matrices'] is None:
+                #     tool0_pose = self.get_tool0_pose()
+                #     self.get_logger().info("Waiting for tool0 pose...")
+                #     time.sleep(0.25)
+                
+                if self.transforms is None or self.transforms['matrices'] is None:
+                    self.get_logger().error("Failed to get tool0 pose, cannot proceed with processing")
+                    rclpy.spin_once(self)
+                    continue
+                else:
+                    self.get_logger().info("Got tool0 pose, proceeding with processing")
+
+                i = self.iter
+                live_data = self.live_sample[i]
+                T_w_e = self.transforms['matrices']
                 pcd = live_data['pcds'][0] if isinstance(live_data['pcds'], list) else live_data['pcds']
 
                 full_sample['live']['obs'] = [transform_pcd(subsample_pcd(pcd), np.linalg.inv(T_w_e))]
@@ -297,7 +368,7 @@ class InstantPolicyNode(Node):
                 full_sample['live']['actions'] = [full_sample['live']['T_w_es'][0].reshape(1, 4, 4).repeat(8, axis=0)]
                 
                 data = save_sample(full_sample, None)
-                
+                print('enconding started')
                 if i == 0:
                     demo_scene_node_embds, demo_scene_node_pos = self.model.model.get_demo_scene_emb(
                         data.to(self.model.config['device']))
@@ -307,7 +378,7 @@ class InstantPolicyNode(Node):
                 
                 data.demo_scene_node_embds = demo_scene_node_embds.clone()
                 data.demo_scene_node_pos = demo_scene_node_pos.clone()
-                
+                print('AI model is running')
                 with torch.no_grad():
                     with torch.autocast(dtype=torch.float32, device_type=self.model.config['device']):
                         actions, grips = self.model.test_step(data.to(self.model.config['device']), 0)
@@ -316,23 +387,59 @@ class InstantPolicyNode(Node):
                 
                 self.get_logger().info(f"Predicted actions shape: {actions.shape}")
                 self.get_logger().info(f"Predicted grips shape: {grips.shape}")
-                print(actions)
+                # print(actions)
 
+                # exceuting the actions
                 for j in range(execution_horizon):
-                    pose_mat = T_w_e @ actions[j]
-                    print(f"\nPose matrix for step {j} (T_w_e @ actions[j]):")
-                    print(pose_mat)
+                    # Print current position coordinates
+                    print(f"Current position (x, y, z): {self.transforms['translations'][0]:.3f}, {self.transforms['translations'][1]:.3f}, {self.transforms['translations'][2]:.3f}")
+
+                    # pose_mat = T_w_e @ actions[j] # do we need to do this?
+                    print(actions[j])
+                    pose_mat = actions[j]
                     pose = self.create_pose(pose_mat)
-                    request = self.createCartesiaRequest()
-                    request.waypoints.append(pose)
-
                     
-                    plan_future = self.cartesian_client.call_async(request)
-                    rclpy.spin_until_future_complete(self, plan_future)
+                    # Calculate distance between current position and target pose
+                    current_pos = np.array(self.transforms['translations'])
+                    target_pos = np.array([pose.position.x, pose.position.y, pose.position.z])
+                    distance = np.linalg.norm(current_pos - target_pos)
+                    print(f"Distance to target: {distance:.3f} meters")
 
-                    if not plan_future.result():
-                        self.get_logger().warn("Cartesian planning failed.")
-                        continue
+                    cartesian_planning = True
+                    print(f"Requested position (x, y, z): {pose.position.x:.3f}, {pose.position.y:.3f}, {pose.position.z:.3f}")
+                    
+                    if cartesian_planning:
+                        print('cartesian planning')
+                        request = self.createCartesiaRequest()
+                        request.waypoints.append(pose)
+                        print('sending the request to planner')
+                        plan_future = self.cartesian_client.call_async(request)
+
+                        print('waiting for the planner to finish')
+
+                        plan_future = self.cartesian_client.call_async(request)
+                        self.get_logger().info("Sleeping for 5 seconds...")
+                        # time.sleep(5.0)
+                        print('spinning until future complete')
+                        rclpy.spin_until_future_complete(self, plan_future)
+                        print('done sleeping')
+
+                        if not plan_future.result():
+                            self.get_logger().warn("Cartesian planning failed.")
+                            continue
+                        
+                        # Sleep for 10 seconds
+
+                    else:
+                        print('pose based motion planning')
+                        pose_msg = self.transform_to_pose_stamped(pose)
+                        print(pose_msg.pose.position)
+
+                        request = self.build_motion_plan_request(pose_msg)
+                        plan_future = self.plan_though_pose_client.call_async(request)
+
+                    # Check if the future is done after timeout or normal completion
+                    print('checking if the future is done')
 
                     goal_msg = ExecuteTrajectory.Goal()
                     goal_msg.trajectory = plan_future.result().solution
@@ -344,13 +451,14 @@ class InstantPolicyNode(Node):
                     # rclpy.spin_until_future_complete(self, result_future)
 
 
-                return actions, grips
+                self.iter += 1
+                
 
-        except Exception as e:
-            self.get_logger().error(f"Error in processing: {str(e)}")
-            import traceback
-            self.get_logger().error(traceback.format_exc())
-            return None, None
+            except Exception as e:
+                self.get_logger().error(f"Error in processing: {str(e)}")
+                import traceback
+                self.get_logger().error(traceback.format_exc())
+                return None, None
 
     def createCartesiaRequest(self):
         request = GetCartesianPath.Request()
@@ -365,23 +473,84 @@ class InstantPolicyNode(Node):
     def create_pose(self, pose_mat):
         'returns the pose'
         pose = Pose()
-        pose.position.y = (pose_mat[0, 3] ) + 0.2
-        pose.position.x = -1*(pose_mat[1, 3])
-        pose.position.z = (pose_mat[2, 3]- 0.8)  # to bring it within the workspace of UR5
-        print(f" pose: {round(pose_mat[0, 3],3)} , {round(pose_mat[1, 3],3)} , {round(pose_mat[2, 3],3)} :::  transformed pose: {round(pose.position.x,3)} , {round(pose.position.y,3)} , {round(pose.position.z,3)}")
+        # pose.position.x = float(pose_mat[0, 3])
+        # pose.position.y = float(pose_mat[1, 3] )
+        # pose.position.z = float(pose_mat[2, 3])         pose.position.x = float(pose_mat[0, 3])
+        pose.position.x = self.transforms['translations'][0] + 0.05
+        pose.position.y = self.transforms['translations'][1] 
+        pose.position.z = self.transforms['translations'][2] 
+
+
+        # print(f"created pose: {round(pose.position.x,3)} , {round(pose.position.y,3)} , {round(pose.position.z,3)}")
         #print(f"transformed pose: {round(pose.position.x,3)} , {round(pose.position.y,3)} , {round(pose.position.y,3)}")
-        quat = R.from_matrix(pose_mat[:3, :3]).as_quat()
-        pose.orientation.x = quat[0]
-        pose.orientation.y = quat[1]
-        pose.orientation.z = quat[2]
-        pose.orientation.w = quat[3]
+        # quat = R.from_matrix(pose_mat[:3, :3]).as_quat()
+        # pose.orientation.x = quat[0]
+        # pose.orientation.y = quat[1]
+        # pose.orientation.z = quat[2]
+        # pose.orientation.w = quat[3]
+
+        pose.orientation.x = self.transforms['rotations'][0]
+        pose.orientation.y = self.transforms['rotations'][1]
+        pose.orientation.z = self.transforms['rotations'][2]
+        pose.orientation.w = self.transforms['rotations'][3]
         return pose
-    
+
+    def transform_to_pose_stamped(self, pose):
+        pose_msg = PoseStamped()
+        pose_msg.header.frame_id = 'base_link'
+        pose_msg.pose = pose
+        return pose_msg
+
+    def build_motion_plan_request(self, pose):
+        request = GetMotionPlan.Request()
+        request.motion_plan_request.group_name = 'ur_manipulator'
+        request.motion_plan_request.allowed_planning_time = 10.0 # 5.0
+        request.motion_plan_request.start_state.is_diff = True
+
+        pos_constraint = PositionConstraint()
+        pos_constraint.header = pose.header
+        pos_constraint.link_name = "tool0"
+        pos_constraint.target_point_offset.x = 0.0
+        pos_constraint.target_point_offset.y = 0.0
+        pos_constraint.target_point_offset.z = 0.0
+
+        region = SolidPrimitive()
+        region.type = SolidPrimitive.BOX
+        # region.dimensions = [0.001, 0.001, 0.001]
+        region.dimensions = [0.1, 0.1, 0.1]
+
+        bounding_volume = BoundingVolume()
+        bounding_volume.primitives.append(region)
+        bounding_volume.primitive_poses.append(pose.pose)
+        pos_constraint.constraint_region = bounding_volume
+        pos_constraint.weight = 1.0
+
+        ori_constraint = OrientationConstraint()
+        ori_constraint.header = pose.header
+        ori_constraint.link_name = "tool0"
+        ori_constraint.orientation = pose.pose.orientation
+        # ori_constraint.absolute_x_axis_tolerance = 0.05 #0.01
+        # ori_constraint.absolute_y_axis_tolerance = 0.05 #0.01
+        # ori_constraint.absolute_z_axis_tolerance = 0.05 #0.01
+        # ori_constraint.weight = 1.0
+        ori_constraint.absolute_x_axis_tolerance = 0.1  # Relax tolerance
+        ori_constraint.absolute_y_axis_tolerance = 0.1  # Relax tolerance
+        ori_constraint.absolute_z_axis_tolerance = 0.1  # Relax tolerance
+        ori_constraint.weight = 1.0  # Keep the same weight for the orientation constraint
+
+        constraints = Constraints()
+        constraints.position_constraints.append(pos_constraint)
+        constraints.orientation_constraints.append(ori_constraint)
+        request.motion_plan_request.goal_constraints.append(constraints)
+        
+        # no constraints
+        # request.motion_plan_request.goal_constraints = []
+        return request    
 
 def main(args=None):
     rclpy.init(args=args)
     node = InstantPolicyNode()
-    
+ 
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
