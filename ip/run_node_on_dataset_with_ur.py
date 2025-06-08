@@ -57,10 +57,12 @@ class InstantPolicyNode(Node):
         self.declare_parameter('model_path', './checkpoints')
         self.declare_parameter('demo_base_dir', os.path.join(os.path.dirname(os.path.dirname(__file__)), 'ip', 'assets', 'rs_data'))
         self.declare_parameter('live_base_dir', os.path.join(os.path.dirname(os.path.dirname(__file__)), 'ip', 'assets', 'rs_data'))
+        self.declare_parameter('play_demo', False)  # Add new parameter
         
         self.model_path = self.get_parameter('model_path').value
         self.demo_base_dir = self.get_parameter('demo_base_dir').value
         self.live_base_dir = self.get_parameter('live_base_dir').value
+        self.play_demo_bool = self.get_parameter('play_demo').value  # Get parameter value
         
         # Initialize MoveIt services
         self.plan_though_pose_client = self.create_client(GetMotionPlan, '/plan_kinematic_path')
@@ -94,7 +96,13 @@ class InstantPolicyNode(Node):
         self.timer_tool0 = self.create_timer(0.1, self.get_tool0_pose)   # 10 Hz
         # self.timer_process_data = self.create_timer(1, self.process_data)  
         self.iter = 0
-        self.process_data()
+        
+        if self.play_demo_bool:
+            self.get_logger().info("Starting in demo mode")
+            self.play_demo()
+        else:
+            self.get_logger().info("Starting in live mode")
+            self.process_data()
 
     def initialize_model(self):
         """Initialize the Instant Policy model."""
@@ -144,17 +152,40 @@ class InstantPolicyNode(Node):
             raise ValueError("No live folders found in the specified directory")
         
         live_folders.sort(key=lambda x: os.path.basename(x), reverse=True)
-        live_folder = live_folders[0]
+        live_folder = live_folders[1]
         
         self.get_logger().info(f"Loading live from: {os.path.basename(live_folder)}")
         self.live_sample = self.load_live_from_folder(live_folder)    
 
     def load_demo_from_folder(self, folder_path):
         """Load demonstration data from a folder containing cropped PCD files and transformation matrices."""
+        
+        # load the transformation matrices
         transform_file = os.path.join(folder_path, 'tool0_transforms.pkl')
         with open(transform_file, 'rb') as f:
             transforms = pickle.load(f)
         
+        # Convert matrices to numpy array for easier filtering
+        transforms['matrices'] = np.array(transforms['matrices'])
+        
+        # Filter out initial entries that are too close to each other
+        if len(transforms['matrices']) > 1:
+            filtered_indices = [0]  # Keep the first entry
+            last_pos = transforms['matrices'][0][:3, 3]  # Get position from first transform
+            
+            for i in range(1, len(transforms['matrices'])):
+                current_pos = transforms['matrices'][i][:3, 3]
+                distance = np.linalg.norm(current_pos - last_pos)
+                
+                if distance > 0.0001:  # Threshold of 0.1mm
+                    filtered_indices.append(i)
+                    last_pos = current_pos
+            
+            # transforms['matrices'] = transforms['matrices'][filtered_indices]
+            self.get_logger().info(f"Filtered transforms from {len(transforms['matrices'])} to {len(filtered_indices)} entries")
+        
+        
+        # Load PCD files
         pcd_dir = os.path.join(folder_path, 'cropped_pcds')
         pcd_files = sorted(glob.glob(os.path.join(pcd_dir, '*.pcd')))
         
@@ -170,6 +201,17 @@ class InstantPolicyNode(Node):
         
         num_pcds = len(pcds)
         transforms['matrices'] = transforms['matrices'][:num_pcds]
+    
+        if num_pcds < len(transforms['matrices']):
+            raise ValueError(f"Number of PCDs ({num_pcds}) is less than number of transforms ({len(transforms['matrices'])})")
+        
+        # Remove initial PCDs to match number of transforms
+        # if num_pcds > len(transforms['matrices']):
+        #     pcds = pcds[-len(transforms['matrices']):]
+        #     self.get_logger().info(f"Removed {num_pcds - len(transforms['matrices'])} initial PCDs to match number of transforms")
+        
+        if len(pcds) != len(transforms['matrices']):
+            raise ValueError(f"Number of PCDs ({len(pcds)}) does not match number of transforms ({len(transforms['matrices'])})")
         
         demo_sample = {
             'obs': pcds,  # Add obs key with same data
@@ -184,28 +226,56 @@ class InstantPolicyNode(Node):
     
     def load_live_from_folder(self, folder_path):
         """Load live data from a folder containing cropped PCD files and transformation matrices."""
-        # Load transformation matrices
+        # load the transformation matrices
         transform_file = os.path.join(folder_path, 'tool0_transforms.pkl')
         with open(transform_file, 'rb') as f:
             transforms = pickle.load(f)
         
+        # Convert matrices to numpy array for easier filtering
+        transforms['matrices'] = np.array(transforms['matrices'])
+        
+        # Filter out initial entries that are too close to each other
+        if len(transforms['matrices']) > 1:
+            filtered_indices = [0]  # Keep the first entry
+            last_pos = transforms['matrices'][0][:3, 3]  # Get position from first transform
+            
+            for i in range(1, len(transforms['matrices'])):
+                current_pos = transforms['matrices'][i][:3, 3]
+                distance = np.linalg.norm(current_pos - last_pos)
+                
+                if distance > 0.0001:  # Threshold of 0.1mm
+                    filtered_indices.append(i)
+                    last_pos = current_pos
+            
+            transforms['matrices'] = transforms['matrices'][filtered_indices]
+            self.get_logger().info(f"Filtered transforms from {len(transforms['matrices'])} to {len(filtered_indices)} entries")
+        
         # Load cropped PCD files
         pcd_dir = os.path.join(folder_path, 'cropped_pcds')
         pcd_files = sorted(glob.glob(os.path.join(pcd_dir, '*.pcd')))
-        
-        # Create a list of live data dictionaries
-        live_data_list = []
-        for i, pcd_file in enumerate(pcd_files):
-            # Read PCD file
+        pcds = []
+        for pcd_file in pcd_files:
             with open(pcd_file, 'r') as f:
                 lines = f.readlines()
-                # Skip header
                 points = []
-                for line in lines[11:]:  # Skip PCD header
+                for line in lines[11:]:
                     x, y, z = map(float, line.strip().split())
                     points.append([x, y, z])
-                pcd = np.array(points, dtype=np.float64)  # Ensure float64 type
-            
+                pcds.append(np.array(points))
+        
+        num_pcds = len(pcds)
+        if num_pcds < len(transforms['matrices']):
+            raise ValueError(f"Number of PCDs ({num_pcds}) is less than number of transforms ({len(transforms['matrices'])})")
+        
+        # Remove initial PCDs to match number of transforms
+        if num_pcds > len(transforms['matrices']):
+            pcds = pcds[-len(transforms['matrices']):]
+            self.get_logger().info(f"Removed {num_pcds - len(transforms['matrices'])} initial PCDs to match number of transforms")
+                
+        # Create a list of live data dictionaries
+        live_data_list = []
+        for i, pcd in enumerate(pcds):
+            # Read PCD file
             # Create live data dictionary for this point cloud
             live_data = {
                 'pcds': [pcd],  # Single point cloud in a list
@@ -303,7 +373,7 @@ class InstantPolicyNode(Node):
                 rclpy.time.Time(),
                 timeout=rclpy.duration.Duration(seconds=0.5)
             )
-            print('updated the transform')
+            # print('updated the transform')
             translation = trans.transform.translation
             rotation = trans.transform.rotation
 
@@ -325,6 +395,85 @@ class InstantPolicyNode(Node):
             # Return None but keep the transforms dictionary initialized
             return None
  
+    def play_demo(self):
+        """Play the demo."""
+        self.get_logger().info(f"Demo sample keys: {self.demo_sample.keys()}")
+        while rclpy.ok():
+            if self.iter == len(self.demo_sample['T_w_es']):
+                self.get_logger().info("Finished processing demo data")
+                return None, None
+            try:
+                # Debug logging to check data structure
+                
+                # getting the tool0 pose
+                if self.transforms is None or self.transforms['matrices'] is None:
+                    self.get_logger().error("Failed to get tool0 pose, cannot proceed with processing")
+                    rclpy.spin_once(self)
+                    continue
+                else:
+                    self.get_logger().info("Got tool0 pose, proceeding with processing")
+
+                # exceuting the actions
+
+                # Print current position coordinates
+                print(f"Current position (x, y, z): {self.transforms['translations'][0]:.3f}, {self.transforms['translations'][1]:.3f}, {self.transforms['translations'][2]:.3f}")
+
+                # pose_mat = T_w_e @ actions[j] # gives better results than without multiplying with the live transform
+                # pose_mat = actions[j]
+                pose_mat = self.demo_sample['T_w_es'][self.iter] # testing with recorded transform
+                pose = self.create_pose(pose_mat)   
+
+                cartesian_planning = True
+                print(f"Requested position (x, y, z): {pose.position.x:.3f}, {pose.position.y:.3f}, {pose.position.z:.3f}")
+                
+                if cartesian_planning:
+                    # print('cartesian planning')
+                    request = self.createCartesiaRequest()
+                    request.waypoints.append(pose)
+                    print('sending the request to planner')
+                    plan_future = self.cartesian_client.call_async(request)
+
+                    print('waiting for the planner to finish')
+
+                    plan_future = self.cartesian_client.call_async(request)
+                    self.get_logger().info("Sleeping for 5 seconds...")
+                    # time.sleep(5.0)
+                    print('spinning until future complete')
+                    rclpy.spin_until_future_complete(self, plan_future)
+                    print('done sleeping')
+
+                    if not plan_future.result():
+                        self.get_logger().warn("Cartesian planning failed.")
+                        continue
+
+                else:
+                    # print('pose based motion planning')
+                    pose_msg = self.transform_to_pose_stamped(pose)
+                    print(pose_msg.pose.position)
+
+                    request = self.build_motion_plan_request(pose_msg)
+                    plan_future = self.plan_though_pose_client.call_async(request)
+
+                # Check if the future is done after timeout or normal completion
+                print('checking if the future is done')
+
+                goal_msg = ExecuteTrajectory.Goal()
+                goal_msg.trajectory = plan_future.result().solution
+
+                send_goal_future = self.execute_client.send_goal_async(goal_msg)
+
+                rclpy.spin_until_future_complete(self, send_goal_future)
+                self.iter += 1
+                print(f'onto to the next data sample {self.iter}=================')
+                
+
+            except Exception as e:
+                self.get_logger().error(f"Error in processing: {str(e)}")
+                import traceback
+                self.get_logger().error(traceback.format_exc())
+                continue
+
+
     def process_data(self):
         """Process the loaded data through the model."""
 
@@ -336,19 +485,19 @@ class InstantPolicyNode(Node):
                 # Debug logging to check data structure
                 self.get_logger().info(f"Demo sample keys: {self.demo_sample.keys()}")
 
+                # full_sample = {
+                #     'demos': [self.demo_sample],
+                #     'live': dict(),
+                # }
+
+                # experiment : make multiple copies of the demo sample
                 full_sample = {
                     'demos': [self.demo_sample],
                     'live': dict(),
                 }
                 execution_horizon = 8  # should be same as the number of actions in the output of the model
                 
-                # Get current tool0 pose
-                # tool0_pose = self.get_tool0_pose()
-                # while tool0_pose is None or self.transforms['matrices'] is None:
-                #     tool0_pose = self.get_tool0_pose()
-                #     self.get_logger().info("Waiting for tool0 pose...")
-                #     time.sleep(0.25)
-                
+                # getting the tool0 pose
                 if self.transforms is None or self.transforms['matrices'] is None:
                     self.get_logger().error("Failed to get tool0 pose, cannot proceed with processing")
                     rclpy.spin_once(self)
@@ -356,8 +505,8 @@ class InstantPolicyNode(Node):
                 else:
                     self.get_logger().info("Got tool0 pose, proceeding with processing")
 
-                i = self.iter
-                live_data = self.live_sample[i]
+                
+                live_data = self.live_sample[self.iter]
                 T_w_e = self.transforms['matrices']
                 pcd = live_data['pcds'][0] if isinstance(live_data['pcds'], list) else live_data['pcds']
 
@@ -368,8 +517,10 @@ class InstantPolicyNode(Node):
                 full_sample['live']['actions'] = [full_sample['live']['T_w_es'][0].reshape(1, 4, 4).repeat(8, axis=0)]
                 
                 data = save_sample(full_sample, None)
+
+                # encoding the data
                 print('enconding started')
-                if i == 0:
+                if self.iter == 0:
                     demo_scene_node_embds, demo_scene_node_pos = self.model.model.get_demo_scene_emb(
                         data.to(self.model.config['device']))
                 
@@ -378,6 +529,8 @@ class InstantPolicyNode(Node):
                 
                 data.demo_scene_node_embds = demo_scene_node_embds.clone()
                 data.demo_scene_node_pos = demo_scene_node_pos.clone()
+
+                # predicting the actions and grips
                 print('AI model is running')
                 with torch.no_grad():
                     with torch.autocast(dtype=torch.float32, device_type=self.model.config['device']):
@@ -394,22 +547,16 @@ class InstantPolicyNode(Node):
                     # Print current position coordinates
                     print(f"Current position (x, y, z): {self.transforms['translations'][0]:.3f}, {self.transforms['translations'][1]:.3f}, {self.transforms['translations'][2]:.3f}")
 
-                    # pose_mat = T_w_e @ actions[j] # do we need to do this?
-                    print(actions[j])
-                    pose_mat = actions[j]
-                    pose = self.create_pose(pose_mat)
-                    
-                    # Calculate distance between current position and target pose
-                    current_pos = np.array(self.transforms['translations'])
-                    target_pos = np.array([pose.position.x, pose.position.y, pose.position.z])
-                    distance = np.linalg.norm(current_pos - target_pos)
-                    print(f"Distance to target: {distance:.3f} meters")
+                    pose_mat = T_w_e @ actions[j] # converts actions from tool0 frame to base_link frame
+                    # pose_mat = actions[j]
+                    # pose_mat = self.live_sample[self.iter]['T_w_es'][0] # testing with recorded transform
+                    pose = self.create_pose(pose_mat)   
 
                     cartesian_planning = True
                     print(f"Requested position (x, y, z): {pose.position.x:.3f}, {pose.position.y:.3f}, {pose.position.z:.3f}")
                     
                     if cartesian_planning:
-                        print('cartesian planning')
+                        # print('cartesian planning')
                         request = self.createCartesiaRequest()
                         request.waypoints.append(pose)
                         print('sending the request to planner')
@@ -418,20 +565,17 @@ class InstantPolicyNode(Node):
                         print('waiting for the planner to finish')
 
                         plan_future = self.cartesian_client.call_async(request)
-                        self.get_logger().info("Sleeping for 5 seconds...")
-                        # time.sleep(5.0)
+
                         print('spinning until future complete')
                         rclpy.spin_until_future_complete(self, plan_future)
-                        print('done sleeping')
+
 
                         if not plan_future.result():
                             self.get_logger().warn("Cartesian planning failed.")
                             continue
-                        
-                        # Sleep for 10 seconds
 
                     else:
-                        print('pose based motion planning')
+                        # print('pose based motion planning')
                         pose_msg = self.transform_to_pose_stamped(pose)
                         print(pose_msg.pose.position)
 
@@ -439,26 +583,56 @@ class InstantPolicyNode(Node):
                         plan_future = self.plan_though_pose_client.call_async(request)
 
                     # Check if the future is done after timeout or normal completion
-                    print('checking if the future is done')
-
+                    print('exceuting the plan')
                     goal_msg = ExecuteTrajectory.Goal()
                     goal_msg.trajectory = plan_future.result().solution
-                    # print('seding the goal to planner')
+
                     send_goal_future = self.execute_client.send_goal_async(goal_msg)
-                    # print('waiting for it to get finished')
+
                     rclpy.spin_until_future_complete(self, send_goal_future)
-                    # result_future = send_goal_future.result().get_result_async()
-                    # rclpy.spin_until_future_complete(self, result_future)
+                    print(f'done exceuting the step {j} -----------------')
+
+                # correction of the robot pose --- only intended for testing phase, not deployment
+                pose_mat = self.live_sample[self.iter]['T_w_es'][0] # testing with recorded transform
+                pose = self.create_pose(pose_mat)   
+                request = self.createCartesiaRequest()
+                request.waypoints.append(pose)
+                print('sending the request to planner')
+                plan_future = self.cartesian_client.call_async(request)
+
+                print('waiting for the planner to finish')
+
+                plan_future = self.cartesian_client.call_async(request)
+
+                print('spinning until future complete')
+                rclpy.spin_until_future_complete(self, plan_future)
 
 
+                if not plan_future.result():
+                    self.get_logger().warn("Cartesian planning failed.")
+                    continue
+                    # Check if the future is done after timeout or normal completion
+                print('executing the plan for correction')
+
+                goal_msg = ExecuteTrajectory.Goal()
+                goal_msg.trajectory = plan_future.result().solution
+
+                send_goal_future = self.execute_client.send_goal_async(goal_msg)
+
+                rclpy.spin_until_future_complete(self, send_goal_future)
+                print('done with the correction')
+
+
+                # done with the correction
                 self.iter += 1
+                print(f'onto to the next data sample {self.iter} =================')
                 
 
             except Exception as e:
                 self.get_logger().error(f"Error in processing: {str(e)}")
                 import traceback
                 self.get_logger().error(traceback.format_exc())
-                return None, None
+                continue
 
     def createCartesiaRequest(self):
         request = GetCartesianPath.Request()
@@ -473,26 +647,19 @@ class InstantPolicyNode(Node):
     def create_pose(self, pose_mat):
         'returns the pose'
         pose = Pose()
-        # pose.position.x = float(pose_mat[0, 3])
-        # pose.position.y = float(pose_mat[1, 3] )
-        # pose.position.z = float(pose_mat[2, 3])         pose.position.x = float(pose_mat[0, 3])
-        pose.position.x = self.transforms['translations'][0] + 0.05
-        pose.position.y = self.transforms['translations'][1] 
-        pose.position.z = self.transforms['translations'][2] 
+        pose.position.x = float(pose_mat[0, 3])
+        pose.position.y = float(pose_mat[1, 3] )
+        pose.position.z = float(pose_mat[2, 3])        
+
+        
+        quat = R.from_matrix(pose_mat[:3, :3]).as_quat()
+        pose.orientation.x = quat[0]
+        pose.orientation.y = quat[1]
+        pose.orientation.z = quat[2]
+        pose.orientation.w = quat[3]
 
 
-        # print(f"created pose: {round(pose.position.x,3)} , {round(pose.position.y,3)} , {round(pose.position.z,3)}")
-        #print(f"transformed pose: {round(pose.position.x,3)} , {round(pose.position.y,3)} , {round(pose.position.y,3)}")
-        # quat = R.from_matrix(pose_mat[:3, :3]).as_quat()
-        # pose.orientation.x = quat[0]
-        # pose.orientation.y = quat[1]
-        # pose.orientation.z = quat[2]
-        # pose.orientation.w = quat[3]
-
-        pose.orientation.x = self.transforms['rotations'][0]
-        pose.orientation.y = self.transforms['rotations'][1]
-        pose.orientation.z = self.transforms['rotations'][2]
-        pose.orientation.w = self.transforms['rotations'][3]
+        print(f"created pose: {round(pose.position.x,3)} , {round(pose.position.y,3)} , {round(pose.position.z,3)}")
         return pose
 
     def transform_to_pose_stamped(self, pose):
